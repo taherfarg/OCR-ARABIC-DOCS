@@ -1,78 +1,51 @@
 """
-Model loader - GPU optimized.
+Dual model loader:
+- Gemma-3 for classification
+- Qwen2.5-VL for OCR text extraction
+Memory managed: loads one at a time on 16GB VRAM
 """
 import gc
 import torch
-from transformers import AutoProcessor, Gemma3ForConditionalGeneration
 from loguru import logger
 
 import config
 
 
-class ModelManager:
+class GemmaModelManager:
+    """Gemma-3 for classification."""
     _model = None
     _processor = None
     _loaded = False
 
     @classmethod
-    def get_instance(cls):
-        if not cls._loaded:
-            cls._load_model()
-        return cls()
-
-    @classmethod
-    def _load_model(cls):
-        logger.info(f"Loading model: {config.MODEL_ID}")
-
+    def load(cls):
+        if cls._loaded:
+            return
+        
+        logger.info(f"📦 Loading Gemma-3: {config.CLASSIFIER_MODEL_ID}")
+        
+        # Free any Qwen model first
+        QwenModelManager.unload()
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
 
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA not available! Reinstall PyTorch with CUDA.")
+        from transformers import AutoProcessor, Gemma3ForConditionalGeneration
 
-        vram = torch.cuda.get_device_properties(0).total_memory / 1e9
-        logger.info(f"GPU: {torch.cuda.get_device_name(0)} | VRAM: {vram:.1f} GB")
+        cls._model = Gemma3ForConditionalGeneration.from_pretrained(
+            config.CLASSIFIER_MODEL_ID,
+            device_map="auto",
+            torch_dtype=torch.bfloat16,
+        )
+        cls._model.eval()
+        cls._processor = AutoProcessor.from_pretrained(config.CLASSIFIER_MODEL_ID)
+        cls._loaded = True
 
-        try:
-            # Try dtype= first (newer transformers), fall back to torch_dtype=
-            try:
-                cls._model = Gemma3ForConditionalGeneration.from_pretrained(
-                    config.MODEL_ID,
-                    device_map=config.DEVICE_MAP,
-                    dtype=torch.bfloat16,
-                )
-            except TypeError:
-                cls._model = Gemma3ForConditionalGeneration.from_pretrained(
-                    config.MODEL_ID,
-                    device_map=config.DEVICE_MAP,
-                    torch_dtype=torch.bfloat16,
-                )
-
-            cls._model.eval()
-
-            cls._processor = AutoProcessor.from_pretrained(config.MODEL_ID)
-            cls._loaded = True
-
-            device = next(cls._model.parameters()).device
-            used = torch.cuda.memory_allocated() / 1e9
-            logger.info(f"Model on {device} | VRAM: {used:.1f}/{vram:.1f} GB")
-
-        except Exception as e:
-            logger.error(f"Failed: {e}")
-            raise
-
-    @property
-    def model(self):
-        return ModelManager._model
-
-    @property
-    def processor(self):
-        return ModelManager._processor
+        used = torch.cuda.memory_allocated() / 1e9
+        logger.info(f"✅ Gemma-3 loaded | VRAM: {used:.1f} GB")
 
     @classmethod
     def unload(cls):
-        if cls._model is not None:
+        if cls._model:
             del cls._model
             del cls._processor
             cls._model = None
@@ -80,3 +53,64 @@ class ModelManager:
             cls._loaded = False
             gc.collect()
             torch.cuda.empty_cache()
+            logger.info("🗑️ Gemma-3 unloaded")
+
+    @classmethod
+    def get_model(cls):
+        cls.load()
+        return cls._model, cls._processor
+
+
+class QwenModelManager:
+    """Qwen2.5-VL for OCR text extraction."""
+    _model = None
+    _processor = None
+    _loaded = False
+
+    @classmethod
+    def load(cls):
+        if cls._loaded:
+            return
+
+        logger.info(f"📦 Loading Qwen: {config.OCR_MODEL_ID}")
+
+        # Free Gemma model first
+        GemmaModelManager.unload()
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+
+        cls._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            config.OCR_MODEL_ID,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            trust_remote_code=True,
+            ignore_mismatched_sizes=True,
+        )
+        cls._model.eval()
+        cls._processor = AutoProcessor.from_pretrained(
+            config.OCR_MODEL_ID,
+            trust_remote_code=True,
+        )
+        cls._loaded = True
+
+        used = torch.cuda.memory_allocated() / 1e9
+        logger.info(f"✅ Qwen loaded | VRAM: {used:.1f} GB")
+
+    @classmethod
+    def unload(cls):
+        if cls._model:
+            del cls._model
+            del cls._processor
+            cls._model = None
+            cls._processor = None
+            cls._loaded = False
+            gc.collect()
+            torch.cuda.empty_cache()
+            logger.info("🗑️ Qwen unloaded")
+
+    @classmethod
+    def get_model(cls):
+        cls.load()
+        return cls._model, cls._processor

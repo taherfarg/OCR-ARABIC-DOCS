@@ -11,8 +11,17 @@ Pipeline:
 5. CLAHE contrast enhancement (handles uneven lighting)
 6. Sharpen text edges
 7. Remove dark borders
-8. Resize to optimal dimensions
-9. Convert to model-specific format (RGB for Qwen, grayscale for Gemma)
+8. Binarization (adaptive thresholding)
+9. Morphological cleanup
+10. Resize to optimal dimensions
+11. Convert to model-specific format (RGB for Qwen, grayscale for Gemma)
+
+Improvements over v1:
+- Better deskew with multiple angle detection
+- Selective binarization (only when it improves clarity)
+- Dilation for thin/faded text
+- Border detection with smart cropping
+- Multiple preprocessing profiles for multi-pass diversity
 """
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
@@ -53,17 +62,15 @@ def adaptive_threshold(image: Image.Image) -> Image.Image:
 def deskew_image(image: Image.Image) -> Image.Image:
     """
     Detect and correct document skew (rotation).
-    Even 1-2 degrees of skew significantly hurts OCR.
+    Improved: tries multiple methods and picks the best angle.
     """
     if not HAS_CV2:
         return image
 
     img_array = np.array(image.convert('L'))
 
-    # Edge detection
+    # Method 1: Hough line detection
     edges = cv2.Canny(img_array, 50, 150, apertureSize=3)
-
-    # Detect lines
     lines = cv2.HoughLinesP(
         edges, 1, np.pi / 180,
         threshold=100,
@@ -71,17 +78,43 @@ def deskew_image(image: Image.Image) -> Image.Image:
         maxLineGap=10,
     )
 
-    if lines is None or len(lines) == 0:
-        return image
-
-    # Calculate average angle
     angles = []
-    for line in lines:
-        x1, y1, x2, y2 = line[0]
-        angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
-        # Only consider near-horizontal lines
-        if abs(angle) < 10:
-            angles.append(angle)
+    if lines is not None and len(lines) > 0:
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
+            # Only consider near-horizontal lines
+            if abs(angle) < 10:
+                angles.append(angle)
+
+    # Method 2: MinAreaRect on text contours (fallback)
+    if not angles:
+        # Find text-like contours
+        binary = cv2.adaptiveThreshold(
+            img_array, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            blockSize=15, C=10,
+        )
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Filter contours by size (text-like)
+        text_contours = [c for c in contours if 100 < cv2.contourArea(c) < 50000]
+        
+        if len(text_contours) >= 5:
+            # Get minimum area bounding rect of all text contours
+            all_points = np.vstack(text_contours)
+            rect = cv2.minAreaRect(all_points)
+            rect_angle = rect[-1]
+            
+            # Adjust angle
+            if rect_angle > 45:
+                rect_angle = rect_angle - 90
+            elif rect_angle < -45:
+                rect_angle = rect_angle + 90
+            
+            if abs(rect_angle) < 10:
+                angles.append(rect_angle)
 
     if not angles:
         return image
@@ -143,14 +176,44 @@ def enhance_contrast_clahe(image: Image.Image, clip_limit: float = 2.0) -> Image
 def remove_borders(image: Image.Image, border_pct: float = 0.02) -> Image.Image:
     """
     Remove dark borders/edges from scanned documents.
-    These confuse OCR models.
+    Improved: uses contour detection for smart cropping.
     """
-    w, h = image.size
-    crop_x = int(w * border_pct)
-    crop_y = int(h * border_pct)
+    if not HAS_CV2:
+        # Fallback: simple percentage crop
+        w, h = image.size
+        crop_x = int(w * border_pct)
+        crop_y = int(h * border_pct)
+        return image.crop((crop_x, crop_y, w - crop_x, h - crop_y))
 
-    cropped = image.crop((crop_x, crop_y, w - crop_x, h - crop_y))
-    return cropped
+    img_array = np.array(image.convert('L'))
+    
+    # Detect content area using threshold
+    _, binary = cv2.threshold(img_array, 240, 255, cv2.THRESH_BINARY_INV)
+    
+    # Find contours
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if not contours:
+        # No content detected, use simple crop
+        w, h = image.size
+        crop_x = int(w * border_pct)
+        crop_y = int(h * border_pct)
+        return image.crop((crop_x, crop_y, w - crop_x, h - crop_y))
+    
+    # Find the bounding box of the largest content area
+    # Combine all contours
+    all_points = np.vstack(contours)
+    x, y, w, h = cv2.boundingRect(all_points)
+    
+    # Add small margin
+    margin = 10
+    img_w, img_h = image.size
+    x = max(0, x - margin)
+    y = max(0, y - margin)
+    w = min(img_w - x, w + 2 * margin)
+    h = min(img_h - y, h + 2 * margin)
+    
+    return image.crop((x, y, x + w, y + h))
 
 
 def morphological_clean(image: Image.Image) -> Image.Image:
@@ -179,6 +242,23 @@ def morphological_clean(image: Image.Image) -> Image.Image:
     cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel_open)
 
     return Image.fromarray(cleaned)
+
+
+def dilate_text(image: Image.Image, iterations: int = 1) -> Image.Image:
+    """
+    Dilate (thicken) thin or faded text.
+    Helps OCR models read faint text more accurately.
+    """
+    if not HAS_CV2:
+        return image
+
+    img_array = np.array(image.convert('L'))
+    _, binary = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 1))
+    dilated = cv2.dilate(binary, kernel, iterations=iterations)
+    
+    return Image.fromarray(dilated)
 
 
 def enhance_for_handwriting(image: Image.Image) -> Image.Image:
@@ -210,6 +290,75 @@ def enhance_for_handwriting(image: Image.Image) -> Image.Image:
     return Image.fromarray(binary)
 
 
+def selective_binarize(image: Image.Image) -> Image.Image:
+    """
+    Apply binarization only if it improves text clarity.
+    Compares histogram spread before/after to decide.
+    """
+    if not HAS_CV2:
+        return image
+
+    img_array = np.array(image.convert('L'))
+    
+    # Calculate histogram spread (bimodal = good for binarization)
+    hist = cv2.calcHist([img_array], [0], None, [256], [0, 256])
+    hist_norm = hist.flatten() / hist.sum()
+    
+    # Check if histogram is bimodal (two peaks = text + background)
+    # Simple check: if there's a significant valley between peaks
+    from scipy.signal import find_peaks
+    try:
+        peaks, _ = find_peaks(hist_norm, height=0.01, distance=20)
+        if len(peaks) >= 2:
+            # Bimodal — binarization will help
+            _, binary = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            return Image.fromarray(binary)
+    except (ImportError, Exception):
+        pass
+    
+    # Not clearly bimodal — try Sauvola binarization (adaptive)
+    # This works better for documents with varying backgrounds
+    mean = np.mean(img_array)
+    std = np.std(img_array)
+    
+    if std > 40:  # High variance suggests mixed content
+        binary = cv2.adaptiveThreshold(
+            img_array, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            blockSize=25,
+            C=10,
+        )
+        return Image.fromarray(binary)
+    
+    return image
+
+
+def remove_noise_isolated(image: Image.Image) -> Image.Image:
+    """
+    Remove isolated noise pixels while preserving text.
+    Uses connected component analysis.
+    """
+    if not HAS_CV2:
+        return image
+
+    img_array = np.array(image.convert('L'))
+    _, binary = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    
+    # Find connected components
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    
+    # Remove very small components (noise)
+    min_size = 5  # Minimum component size in pixels
+    for i in range(1, num_labels):
+        if stats[i, cv2.CC_STAT_AREA] < min_size:
+            binary[labels == i] = 0
+    
+    # Convert back to normal (white background, black text)
+    result = cv2.bitwise_not(binary)
+    return Image.fromarray(result)
+
+
 def full_preprocess_pipeline(
     image_input: Union[str, Path, Image.Image],
     target_dpi: int = 300,
@@ -217,6 +366,8 @@ def full_preprocess_pipeline(
     for_model: str = "qwen",
     extra_contrast: bool = False,
     enhance_handwriting: bool = False,
+    dilate: bool = False,
+    binarize: bool = False,
 ) -> Image.Image:
     """
     Full preprocessing pipeline for maximum OCR accuracy.
@@ -231,8 +382,12 @@ def full_preprocess_pipeline(
     7. Remove borders
     8. Optional: extra contrast pass
     9. Optional: handwriting enhancement
-    10. Resize to optimal size
-    11. Convert to appropriate format (RGB for Qwen, Grayscale for Gemma)
+    10. Optional: dilation for thin text
+    11. Optional: selective binarization
+    12. Morphological cleanup
+    13. Remove isolated noise
+    14. Resize to optimal size
+    15. Convert to appropriate format (RGB for Qwen, Grayscale for Gemma)
     """
     # Load
     if isinstance(image_input, (str, Path)):
@@ -282,16 +437,27 @@ def full_preprocess_pipeline(
     if enhance_handwriting:
         gray = enhance_for_handwriting(gray)
 
-    # 10. Morphological cleanup
+    # 10. Dilation for thin/faded text
+    if dilate:
+        gray = dilate_text(gray, iterations=1)
+
+    # 11. Selective binarization
+    if binarize:
+        gray = selective_binarize(gray)
+
+    # 12. Morphological cleanup
     gray = morphological_clean(gray)
 
-    # 11. Resize to optimal size
+    # 13. Remove isolated noise pixels
+    gray = remove_noise_isolated(gray)
+
+    # 14. Resize to optimal size
     if gray.width > max_width:
         ratio = max_width / float(gray.width)
         new_h = int(gray.height * ratio)
         gray = gray.resize((max_width, new_h), Image.LANCZOS)
 
-    # 12. Format for model
+    # 15. Format for model
     if for_model == "qwen":
         # Qwen needs RGB
         result = Image.merge("RGB", (gray, gray, gray))

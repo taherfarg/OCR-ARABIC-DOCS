@@ -5,6 +5,13 @@ Document classifier — THREE methods combined for robust classification:
 3. Structural pattern matching (detects document layout patterns)
 
 Priority: Model JSON field > Keyword matching > Structural patterns
+
+Improvements over v1:
+- More document types (memorandum, report)
+- Better structural detection with more patterns
+- Arabic-aware normalization
+- Improved confidence scoring
+- Cross-validation between methods
 """
 import re
 from typing import Dict, List, Tuple, Optional
@@ -29,6 +36,8 @@ class DocumentClassifier:
         # Normalize taa marbuta and other variants
         text = text.replace('ة', 'ه').replace('ى', 'ي')
         text = text.replace('ؤ', 'و').replace('ئ', 'ي')
+        # Remove tatweel
+        text = text.replace('\u0640', '')
         # Collapse whitespace
         text = re.sub(r'\s+', ' ', text).strip()
         return text
@@ -73,6 +82,7 @@ class DocumentClassifier:
             "document_type", "type", "document_title",
             "title", "form_type", "form_name",
             "نوع_المستند", "نوع_الوثيقة", "نوع المستند",
+            "category", "document_category",
         ])
 
         if not doc_type_value:
@@ -88,15 +98,16 @@ class DocumentClassifier:
                 "سند دفع", "payment", "voucher", "صرف",
                 "ap - payment", "ap-payment", "مستندصرف",
                 "سند صرف", "مستند صرف / سند دفع",
+                "pv", "سند صرف نقدي",
             ],
             "invoice": [
                 "invoice", "فاتورة", "فاتوره",
                 "tax invoice", "فاتورة ضريبية", "فاتوره ضريبيه",
-                "bill", "فاتورة ضريبة",
+                "bill", "فاتورة ضريبة", "فاتوره ضريبه",
             ],
             "purchase_order": [
                 "purchase order", "أمر شراء", "امر شراء",
-                "po ", "طلب شراء", "أمر شراء",
+                "po ", "طلب شراء",
             ],
             "contract": [
                 "contract", "عقد", "agreement", "اتفاقية", "اتفاقيه",
@@ -104,7 +115,7 @@ class DocumentClassifier:
             ],
             "letter": [
                 "letter", "خطاب", "رسالة", "رساله", "مراسلة",
-                "مذكرة", "memorandum",
+                "مذكرة", "memorandum", "correspondence",
             ],
             "receipt": [
                 "receipt", "إيصال", "ايصال", "سند قبض",
@@ -118,6 +129,15 @@ class DocumentClassifier:
             "bank_statement": [
                 "bank statement", "كشف حساب", "كشف حساب بنكي",
                 "statement", "كشف", "account statement",
+            ],
+            "memorandum": [
+                "memorandum", "مذكرة", "مذكره", "memo",
+                "internal memo", "مذكرة داخلية",
+            ],
+            "report": [
+                "report", "تقرير",
+                "annual report", "تقرير سنوي",
+                "financial report", "تقرير مالي",
             ],
         }
 
@@ -248,100 +268,239 @@ class DocumentClassifier:
         """
         METHOD 3: Structural pattern matching.
         Detects document type from layout patterns, not just keywords.
+        Improved with more patterns and better detection.
         """
         normalized = self._normalize(text)
         lines = [l.strip() for l in text.split('\n') if l.strip()]
 
-        # Payment voucher: typically has debit/credit columns, supplier info, bank details
-        if self._has_structure_payment_voucher(normalized, lines):
-            info = self.document_types.get("payment_voucher", {})
-            return {
-                "document_type": "payment_voucher",
-                "name_ar": info.get("name_ar", ""),
-                "name_en": info.get("name_en", ""),
-                "confidence": 55.0,
-                "method": "structural_pattern",
-            }
+        # Try each document type's structural detection
+        detectors = [
+            ("payment_voucher", self._has_structure_payment_voucher),
+            ("invoice", self._has_structure_invoice),
+            ("legal_document", self._has_structure_legal),
+            ("bank_statement", self._has_structure_bank_statement),
+            ("contract", self._has_structure_contract),
+            ("letter", self._has_structure_letter),
+            ("memorandum", self._has_structure_memorandum),
+        ]
 
-        # Invoice: typically has item lines with prices, totals, VAT
-        if self._has_structure_invoice(normalized, lines):
-            info = self.document_types.get("invoice", {})
-            return {
-                "document_type": "invoice",
-                "name_ar": info.get("name_ar", ""),
-                "name_en": info.get("name_en", ""),
-                "confidence": 50.0,
-                "method": "structural_pattern",
-            }
+        results = []
+        for doc_type, detector in detectors:
+            result = detector(normalized, lines)
+            if result:
+                results.append((doc_type, result))
 
-        # Legal document: articles, chapters, numbered provisions
-        if self._has_structure_legal(normalized, lines):
-            info = self.document_types.get("legal_document", {})
+        # Return the highest-confidence structural match
+        if results:
+            best_type, best_conf = max(results, key=lambda x: x[1])
+            info = self.document_types.get(best_type, {})
             return {
-                "document_type": "legal_document",
+                "document_type": best_type,
                 "name_ar": info.get("name_ar", ""),
                 "name_en": info.get("name_en", ""),
-                "confidence": 55.0,
+                "confidence": best_conf,
                 "method": "structural_pattern",
             }
 
         return None
 
-    def _has_structure_payment_voucher(self, normalized: str, lines: List[str]) -> bool:
-        """Detect payment voucher structure."""
+    def _has_structure_payment_voucher(self, normalized: str, lines: List[str]) -> Optional[float]:
+        """Detect payment voucher structure. Returns confidence or None."""
         indicators = 0
         # Has debit/credit pattern
-        if re.search(r'(debit|credit|مدين|دائن)', normalized):
+        if re.search(r'(debit|credit|مدين|دائن|المبالغ المدينة|المبالغ الدائنة)', normalized):
             indicators += 2
         # Has supplier pattern
-        if re.search(r'(supplier|vendor|مورد|المورد)', normalized):
+        if re.search(r'(supplier|vendor|مورد|المورد|بيانات المورد)', normalized):
             indicators += 2
         # Has bank pattern
-        if re.search(r'(bank|بنك|البنك)', normalized):
+        if re.search(r'(bank|بنك|البنك|اسم البنك|رقم الحساب)', normalized):
             indicators += 1
         # Has payment method
-        if re.search(r'(cheque|check|wire|transfer|شيك|تحويل)', normalized):
+        if re.search(r'(cheque|check|wire|transfer|شيك|تحويل|طريقة الدفع)', normalized):
             indicators += 1
         # Has PV/BC number pattern
-        if re.search(r'(pv\s*no|bc\s*no)', normalized):
+        if re.search(r'(pv\s*no|bc\s*no|pv\s*number)', normalized):
             indicators += 2
-        return indicators >= 4
+        # Has net payment
+        if re.search(r'(net\s*payment|صافي الدفعة|صافي المبلغ)', normalized):
+            indicators += 1
+        # Has accounting distribution
+        if re.search(r'(chart\s*of\s*account|accounting\s*distribution|التوزيع الحسابي)', normalized):
+            indicators += 1
+        # Has authorisation pattern
+        if re.search(r'(authorised|authorized|اعتماد|المعتمد)', normalized):
+            indicators += 1
 
-    def _has_structure_invoice(self, normalized: str, lines: List[str]) -> bool:
-        """Detect invoice structure."""
+        if indicators >= 5:
+            return 65.0
+        elif indicators >= 4:
+            return 55.0
+        return None
+
+    def _has_structure_invoice(self, normalized: str, lines: List[str]) -> Optional[float]:
+        """Detect invoice structure. Returns confidence or None."""
         indicators = 0
         # Has quantity/price pattern
-        if re.search(r'(quantity|unit\s*price|الكمية|سعر|السعر)', normalized):
+        if re.search(r'(quantity|unit\s*price|الكمية|سعر|السعر|سعر الوحدة)', normalized):
             indicators += 2
         # Has subtotal/total/VAT
-        if re.search(r'(subtotal|vat|total|الإجمالي|الضريبة|المجموع)', normalized):
+        if re.search(r'(subtotal|vat|total|الإجمالي|الضريبة|المجموع|القيمة المضافة)', normalized):
             indicators += 2
         # Has bill-to pattern
-        if re.search(r'(bill\s*to|ship\s*to|فاتورة|المستلم)', normalized):
+        if re.search(r'(bill\s*to|ship\s*to|فاتورة|المستلم|المشتري)', normalized):
             indicators += 1
         # Has item lines with amounts
         amount_lines = sum(1 for l in lines if re.search(r'\d+[\.,]\d{2}', l))
         if amount_lines >= 3:
             indicators += 1
-        return indicators >= 4
+        # Has invoice number
+        if re.search(r'(invoice\s*(no|number|رقم)|رقم الفاتورة)', normalized):
+            indicators += 2
+        # Has tax registration
+        if re.search(r'(trn|tax\s*registration|الرقم الضريبي|التسجيل الضريبي)', normalized):
+            indicators += 1
 
-    def _has_structure_legal(self, normalized: str, lines: List[str]) -> bool:
-        """Detect legal document structure."""
+        if indicators >= 5:
+            return 60.0
+        elif indicators >= 4:
+            return 50.0
+        return None
+
+    def _has_structure_legal(self, normalized: str, lines: List[str]) -> Optional[float]:
+        """Detect legal document structure. Returns confidence or None."""
         indicators = 0
         # Has article numbering (المادة الأولى, المادة 2, etc.)
-        if re.search(r'(المادة|ماده)\s*(الأولى|الثانية|الثالثة|\d+)', normalized):
+        if re.search(r'(المادة|ماده)\s*(الأولى|الثانية|الثالثة|الرابعة|الخامسة|\d+)', normalized):
             indicators += 3
         # Has chapter/section structure
-        if re.search(r'(باب|فصل|قسم|chapter|section)', normalized):
+        if re.search(r'(باب|فصل|قسم|chapter|section|الباب|الفصل)', normalized):
             indicators += 2
         # Has legal authority references
-        if re.search(r'(مجلس الوزراء|هيئة الخبراء|مرسوم ملكي|نظام)', normalized):
+        if re.search(r'(مجلس الوزراء|هيئة الخبراء|مرسوم ملكي|نظام|المملكة العربية السعودية)', normalized):
             indicators += 2
         # Has numbered provisions
         numbered_lines = sum(1 for l in lines if re.match(r'^\s*\d+\s*[-–.]', l))
         if numbered_lines >= 3:
             indicators += 1
-        return indicators >= 4
+        # Has legal terms
+        if re.search(r'(أحكام|سريان|إنهاء|تنفيذ|لائحة|مرسوم|قرار)', normalized):
+            indicators += 1
+        # Has باب تمهيدي or أحكام عامة
+        if re.search(r'(باب تمهيدي|أحكام عامة|أحكام ختامية|أحكام انتقالية)', normalized):
+            indicators += 2
+
+        if indicators >= 5:
+            return 65.0
+        elif indicators >= 4:
+            return 55.0
+        return None
+
+    def _has_structure_bank_statement(self, normalized: str, lines: List[str]) -> Optional[float]:
+        """Detect bank statement structure. Returns confidence or None."""
+        indicators = 0
+        # Has balance patterns
+        if re.search(r'(opening\s*balance|closing\s*balance|رصيد افتتاحي|رصيد ختامي|الرصيد)', normalized):
+            indicators += 3
+        # Has transaction patterns
+        if re.search(r'(debit|credit|balance|مدين|دائن|رصيد|إيداع|سحب)', normalized):
+            indicators += 2
+        # Has IBAN
+        if re.search(r'iban', normalized):
+            indicators += 2
+        # Has statement period
+        if re.search(r'(statement\s*period|فترة البيان|من تاريخ|إلى تاريخ)', normalized):
+            indicators += 1
+        # Has many amount lines (transactions)
+        amount_lines = sum(1 for l in lines if re.search(r'\d+[\.,]\d{2}', l))
+        if amount_lines >= 5:
+            indicators += 1
+        # Has date patterns in multiple lines
+        date_lines = sum(1 for l in lines if re.search(r'\d{1,4}[/-]\d{1,2}[/-]\d{1,4}', l))
+        if date_lines >= 5:
+            indicators += 1
+
+        if indicators >= 5:
+            return 60.0
+        elif indicators >= 4:
+            return 50.0
+        return None
+
+    def _has_structure_contract(self, normalized: str, lines: List[str]) -> Optional[float]:
+        """Detect contract/agreement structure. Returns confidence or None."""
+        indicators = 0
+        # Has party references
+        if re.search(r'(الطرف الأول|الطرف الثاني|first party|second party|party\s*a|party\s*b)', normalized):
+            indicators += 3
+        # Has terms and conditions
+        if re.search(r'(terms\s*and\s*conditions|الشروط والأحكام|الشروط والاحكام)', normalized):
+            indicators += 2
+        # Has contract duration
+        if re.search(r'(مدة العقد|contract\s*duration|effective\s*date|تاريخ السريان)', normalized):
+            indicators += 1
+        # Has contract value
+        if re.search(r'(قيمة العقد|contract\s*value|contract\s*amount)', normalized):
+            indicators += 1
+        # Has scope of work
+        if re.search(r'(scope\s*of\s*work|نطاق العمل)', normalized):
+            indicators += 1
+        # Has signatures section
+        if re.search(r'(signatures|التوقيعات|التوقيع|موقع)', normalized):
+            indicators += 1
+        # Has numbered clauses
+        numbered_lines = sum(1 for l in lines if re.match(r'^\s*\d+\s*[-–.]', l))
+        if numbered_lines >= 3:
+            indicators += 1
+
+        if indicators >= 4:
+            return 55.0
+        return None
+
+    def _has_structure_letter(self, normalized: str, lines: List[str]) -> Optional[float]:
+        """Detect official letter structure. Returns confidence or None."""
+        indicators = 0
+        # Has greeting
+        if re.search(r'(dear\s*sir|السيد المحترم|تحية طيبة|السلام عليكم)', normalized):
+            indicators += 2
+        # Has subject line
+        if re.search(r'(subject|re:|الموضوع|الموضوع:)', normalized):
+            indicators += 2
+        # Has reference number
+        if re.search(r'(ref\s*no|reference|المرجع|رقم المرجع)', normalized):
+            indicators += 1
+        # Has closing
+        if re.search(r'(sincerely|المكرم|فائق الاحترام|والسلام عليكم)', normalized):
+            indicators += 1
+        # Has date at top
+        if lines and re.search(r'\d{1,4}[/-]\d{1,2}[/-]\d{1,4}', lines[0]):
+            indicators += 1
+        # Has "to/from" pattern
+        if re.search(r'(^|\n)(to|from|إلى|من)\s*:', normalized):
+            indicators += 1
+
+        if indicators >= 4:
+            return 55.0
+        return None
+
+    def _has_structure_memorandum(self, normalized: str, lines: List[str]) -> Optional[float]:
+        """Detect memorandum structure. Returns confidence or None."""
+        indicators = 0
+        # Has memo header
+        if re.search(r'(memorandum|مذكرة|memo)', normalized):
+            indicators += 2
+        # Has to/from/date/subject pattern
+        if re.search(r'(from:|من:)', normalized) and re.search(r'(to:|إلى:)', normalized):
+            indicators += 2
+        # Has recommendation/objective
+        if re.search(r'(recommendation|objective|التوصية|الهدف|الأهداف)', normalized):
+            indicators += 1
+        # Has background section
+        if re.search(r'(background|الخلفية)', normalized):
+            indicators += 1
+
+        if indicators >= 3:
+            return 50.0
+        return None
 
     def classify(self, ocr_text: str, json_data: dict = None) -> Dict:
         """

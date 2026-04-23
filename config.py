@@ -1,13 +1,9 @@
 """
-Dual model config:
-- Gemma-3: Classification (fast, 11s, 95% accuracy)
-- Qwen2.5-VL: OCR text extraction (accurate text)
+Dual model config.
 """
 from pathlib import Path
 
-# ========================
 # PATHS
-# ========================
 BASE_DIR = Path(__file__).parent
 INPUT_DIR = BASE_DIR / "input_documents"
 OUTPUT_DIR = BASE_DIR / "output_results"
@@ -17,61 +13,30 @@ INPUT_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 LOG_DIR.mkdir(exist_ok=True)
 
-# ========================
-# MODEL 1: CLASSIFICATION (Gemma-3)
-# ========================
+# MODELS
 CLASSIFIER_MODEL_ID = "bakrianoo/arabic-legal-documents-ocr-1.0"
 CLASSIFIER_PROMPT = "Extract details to JSON."
-
-# ========================
-# MODEL 2: OCR TEXT EXTRACTION (Qwen2.5-VL)
-# ========================
 OCR_MODEL_ID = "sherif1313/Arabic-English-handwritten-OCR-v3"
-OCR_PROMPT = """ارجو استخراج النص العربي والانجليزي كاملاً من هذه الصورة من البداية الى النهاية.
+OCR_PROMPT = """ارجو استخراج النص العربي والانجليزي كاملاً من هذه الصورة من البداية الى النهاية بدون اي اختصار ودون زيادة او حذف. اقرأ كل المحتوى النصي الموجود في الصورة بما في ذلك الأرقام والتواريخ والجداول:"""
 
-قواعد مهمة:
-١- انسخ كل كلمة وكل رقم وكل تاريخ بالضبط كما يظهر
-٢- حافظ على ترتيب الأسطر من أعلى الى أسفل
-٣- انسخ أرقام الحسابات والفواتير بدقة تامة
-٤- حافظ على شكل الجداول
-٥- لا تخترع أي نص غير موجود
-٦- اكتب [غير واضح] للكلمات التي لا يمكن قراءتها
-
-اقرأ كل المحتوى:"""
-# ========================
-# PROCESSING MODE
-# ========================
-# "classify_only"    → Fast, only classification (Gemma-3 only)
-# "ocr_only"         → Only text extraction (Qwen only)  
-# "full"             → Both classification + accurate OCR (both models)
+# MODE
 PROCESSING_MODE = "full"
 
-# ========================
-# IMAGE PREPROCESSING
-# ========================
-# Gemma-3 requires grayscale
+# IMAGE PREPROCESSING ← THIS IS WHAT WAS MISSING!
 GEMMA_MAX_WIDTH = 1024
 GEMMA_CONTRAST = 1.5
-
-# Qwen works with RGB
 QWEN_MAX_SIZE = 1200
 QWEN_MIN_SIZE = 800
+PDF_DPI = 400
 
-# ========================
 # GENERATION
-# ========================
-# Gemma-3 (classification)
 GEMMA_MAX_TOKENS = 1024
 GEMMA_REPETITION_PENALTY = 1.5
-
-# Qwen (OCR)
 QWEN_MAX_TOKENS = 1024
 QWEN_MIN_TOKENS = 50
 QWEN_REPETITION_PENALTY = 1.1
 
-# ========================
-# DOCUMENT CLASSIFICATION
-# ========================
+# CLASSIFICATION
 DOCUMENT_TYPES = {
     "payment_voucher": {
         "name_ar": "مستند صرف / سند دفع",
@@ -195,10 +160,6 @@ DOCUMENT_TYPES = {
 
 MIN_CONFIDENCE = 15.0
 
-# ========================
 # FILES
-# ========================
 SUPPORTED_IMAGE_FORMATS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"}
 SUPPORTED_PDF_FORMAT = ".pdf"
-PDF_DPI = 300
-POPPLER_PATH = r"C:\poppler\poppler-24.08.0\Library\bin"

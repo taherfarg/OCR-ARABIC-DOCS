@@ -83,10 +83,9 @@ class QwenModelManager:
 
         cls._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             config.OCR_MODEL_ID,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             device_map="auto",
             trust_remote_code=True,
-            ignore_mismatched_sizes=True,
         )
         cls._model.eval()
         cls._processor = AutoProcessor.from_pretrained(

@@ -3,6 +3,7 @@ Dual model loader:
 - Gemma-3 for classification
 - Qwen2.5-VL for OCR text extraction
 Memory managed: loads one at a time on 16GB VRAM
+Supports optional 4-bit quantization for lower VRAM GPUs.
 """
 import gc
 import torch
@@ -21,20 +22,33 @@ class GemmaModelManager:
     def load(cls):
         if cls._loaded:
             return
-        
+
         logger.info(f"📦 Loading Gemma-3: {config.CLASSIFIER_MODEL_ID}")
-        
+
         # Free any Qwen model first
         QwenModelManager.unload()
         gc.collect()
         torch.cuda.empty_cache()
 
-        from transformers import AutoProcessor, Gemma3ForConditionalGeneration
+        from transformers import AutoProcessor, Gemma3ForConditionalGeneration, BitsAndBytesConfig
+
+        kwargs = {
+            "device_map": "auto",
+            "torch_dtype": torch.bfloat16,
+        }
+
+        # Optional 4-bit quantization for constrained VRAM
+        if config.USE_4BIT_QUANTIZATION:
+            kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_quant_type="nf4",
+            )
+            logger.info("  Using 4-bit quantization")
 
         cls._model = Gemma3ForConditionalGeneration.from_pretrained(
             config.CLASSIFIER_MODEL_ID,
-            device_map="auto",
-            torch_dtype=torch.bfloat16,
+            **kwargs,
         )
         cls._model.eval()
         cls._processor = AutoProcessor.from_pretrained(config.CLASSIFIER_MODEL_ID)
@@ -79,13 +93,26 @@ class QwenModelManager:
         gc.collect()
         torch.cuda.empty_cache()
 
-        from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+        from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, BitsAndBytesConfig
+
+        kwargs = {
+            "torch_dtype": torch.bfloat16,  # FIX: was 'dtype' which is ignored
+            "device_map": "auto",
+            "trust_remote_code": True,
+        }
+
+        # Optional 4-bit quantization for constrained VRAM
+        if config.USE_4BIT_QUANTIZATION:
+            kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_quant_type="nf4",
+            )
+            logger.info("  Using 4-bit quantization")
 
         cls._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             config.OCR_MODEL_ID,
-            dtype=torch.bfloat16,
-            device_map="auto",
-            trust_remote_code=True,
+            **kwargs,
         )
         cls._model.eval()
         cls._processor = AutoProcessor.from_pretrained(

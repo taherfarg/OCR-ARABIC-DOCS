@@ -1,11 +1,23 @@
 """
 Advanced image preprocessing for maximum OCR accuracy.
-Applies multiple enhancement techniques.
+Applies multiple enhancement techniques tuned for Arabic/English mixed documents,
+both handwritten and printed, on scanned government documents.
+
+Pipeline:
+1. Load & convert to grayscale
+2. Upscale low-resolution images
+3. Deskew (straighten rotated scans)
+4. Denoise (remove scan artifacts)
+5. CLAHE contrast enhancement (handles uneven lighting)
+6. Sharpen text edges
+7. Remove dark borders
+8. Resize to optimal dimensions
+9. Convert to model-specific format (RGB for Qwen, grayscale for Gemma)
 """
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
 from pathlib import Path
-from typing import Union
+from typing import Union, Optional
 from loguru import logger
 
 try:
@@ -83,7 +95,7 @@ def deskew_image(image: Image.Image) -> Image.Image:
     return image.rotate(median_angle, fillcolor=255, expand=True)
 
 
-def denoise_image(image: Image.Image) -> Image.Image:
+def denoise_image(image: Image.Image, strength: int = 10) -> Image.Image:
     """
     Remove noise from scanned documents.
     Uses non-local means denoising.
@@ -96,9 +108,9 @@ def denoise_image(image: Image.Image) -> Image.Image:
     # Non-local means denoising
     denoised = cv2.fastNlMeansDenoising(
         img_array,
-        h=10,                    # Filter strength
-        templateWindowSize=7,    # Template patch size
-        searchWindowSize=21,     # Search area size
+        h=strength,               # Filter strength (higher = more denoising)
+        templateWindowSize=7,     # Template patch size
+        searchWindowSize=21,      # Search area size
     )
 
     return Image.fromarray(denoised)
@@ -110,7 +122,7 @@ def sharpen_image(image: Image.Image, factor: float = 1.5) -> Image.Image:
     return enhancer.enhance(factor)
 
 
-def enhance_contrast_clahe(image: Image.Image) -> Image.Image:
+def enhance_contrast_clahe(image: Image.Image, clip_limit: float = 2.0) -> Image.Image:
     """
     CLAHE (Contrast Limited Adaptive Histogram Equalization).
     Much better than simple contrast enhancement.
@@ -122,7 +134,7 @@ def enhance_contrast_clahe(image: Image.Image) -> Image.Image:
 
     img_array = np.array(image.convert('L'))
 
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
     enhanced = clahe.apply(img_array)
 
     return Image.fromarray(enhanced)
@@ -141,11 +153,70 @@ def remove_borders(image: Image.Image, border_pct: float = 0.02) -> Image.Image:
     return cropped
 
 
+def morphological_clean(image: Image.Image) -> Image.Image:
+    """
+    Morphological operations to clean up text:
+    - Close small gaps in characters
+    - Remove tiny noise dots
+    Particularly helpful for handwritten text.
+    """
+    if not HAS_CV2:
+        return image
+
+    img_array = np.array(image.convert('L'))
+
+    # Ensure binary
+    _, binary = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Small kernel to close gaps in characters without merging lines
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+
+    # Close: fills small gaps in character strokes
+    cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+
+    # Open: removes small noise dots
+    kernel_open = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 1))
+    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel_open)
+
+    return Image.fromarray(cleaned)
+
+
+def enhance_for_handwriting(image: Image.Image) -> Image.Image:
+    """
+    Special enhancement pass for handwritten text regions.
+    Increases contrast and sharpness more aggressively.
+    """
+    if not HAS_CV2:
+        enhancer = ImageEnhance.Contrast(image)
+        image = enhancer.enhance(2.0)
+        enhancer = ImageEnhance.Sharpness(image)
+        return enhancer.enhance(2.0)
+
+    img_array = np.array(image.convert('L'))
+
+    # Stronger CLAHE for handwriting
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(img_array)
+
+    # Adaptive threshold to isolate handwriting
+    binary = cv2.adaptiveThreshold(
+        enhanced, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        blockSize=11,
+        C=5,
+    )
+
+    return Image.fromarray(binary)
+
+
 def full_preprocess_pipeline(
     image_input: Union[str, Path, Image.Image],
     target_dpi: int = 300,
-    max_width: int = 2048,      # Higher resolution for better accuracy!
-    for_model: str = "qwen",    # "qwen" or "gemma"
+    max_width: int = 2048,
+    for_model: str = "qwen",
+    extra_contrast: bool = False,
+    enhance_handwriting: bool = False,
 ) -> Image.Image:
     """
     Full preprocessing pipeline for maximum OCR accuracy.
@@ -157,8 +228,11 @@ def full_preprocess_pipeline(
     4. Denoise
     5. CLAHE contrast enhancement
     6. Sharpen
-    7. Convert to appropriate format (RGB for Qwen, Grayscale for Gemma)
-    8. Resize to optimal size
+    7. Remove borders
+    8. Optional: extra contrast pass
+    9. Optional: handwriting enhancement
+    10. Resize to optimal size
+    11. Convert to appropriate format (RGB for Qwen, Grayscale for Gemma)
     """
     # Load
     if isinstance(image_input, (str, Path)):
@@ -184,30 +258,45 @@ def full_preprocess_pipeline(
     # 3. Deskew
     gray = deskew_image(gray)
 
-    # 4. Denoise
-    gray = denoise_image(gray)
+    # 4. Denoise — lighter for printed text, heavier for handwritten
+    denoise_strength = 15 if enhance_handwriting else 10
+    gray = denoise_image(gray, strength=denoise_strength)
 
     # 5. CLAHE contrast
-    gray = enhance_contrast_clahe(gray)
+    clip_limit = 3.0 if extra_contrast else 2.0
+    gray = enhance_contrast_clahe(gray, clip_limit=clip_limit)
 
     # 6. Sharpen
-    gray = sharpen_image(gray, factor=1.3)
+    sharpen_factor = 1.5 if enhance_handwriting else 1.3
+    gray = sharpen_image(gray, factor=sharpen_factor)
 
     # 7. Remove borders
     gray = remove_borders(gray, border_pct=0.01)
 
-    # 8. Resize to optimal size
+    # 8. Extra contrast pass (for detail-focused OCR pass)
+    if extra_contrast:
+        gray = enhance_contrast_clahe(gray, clip_limit=3.0)
+        gray = sharpen_image(gray, factor=1.5)
+
+    # 9. Handwriting enhancement
+    if enhance_handwriting:
+        gray = enhance_for_handwriting(gray)
+
+    # 10. Morphological cleanup
+    gray = morphological_clean(gray)
+
+    # 11. Resize to optimal size
     if gray.width > max_width:
         ratio = max_width / float(gray.width)
         new_h = int(gray.height * ratio)
         gray = gray.resize((max_width, new_h), Image.LANCZOS)
 
-    # 9. Format for model
+    # 12. Format for model
     if for_model == "qwen":
         # Qwen needs RGB
         result = Image.merge("RGB", (gray, gray, gray))
     else:
-        # Gemma needs grayscale
+        # Gemma works with grayscale
         result = gray
 
     logger.info(f"✅ Preprocessed: {result.size} ({for_model} mode)")

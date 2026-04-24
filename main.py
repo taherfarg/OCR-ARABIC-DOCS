@@ -133,6 +133,10 @@ def main():
     if args.processing:
         config.PROCESSING_MODE = args.processing
 
+    # Early validation: check quantization prerequisites before any model loading
+    from model_loader import validate_quantization_config
+    validate_quantization_config()
+
     if args.mode == "single":
         if not args.input:
             parser.error("--input required")

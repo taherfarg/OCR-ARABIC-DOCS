@@ -21,12 +21,43 @@ import torch
 import json_repair
 from PIL import Image
 from loguru import logger
+from transformers import StoppingCriteria, StoppingCriteriaList
 
 import config
 from model_loader import GemmaModelManager, QwenModelManager
-from advanced_preprocess import full_preprocess_pipeline
+from advanced_preprocess import full_preprocess_pipeline, light_preprocess_vlm
 from preprocess import get_first_page_image
 from post_process import clean_ocr_text, validate_ocr_output
+
+
+class SafeStoppingCriteria(StoppingCriteria):
+    """
+    Combined timeout + progress logging stopping criteria.
+    Prevents generation from hanging indefinitely.
+    """
+    def __init__(self, max_seconds: int = 300, log_interval: int = 30):
+        self.start_time = time.time()
+        self.max_seconds = max_seconds
+        self.log_interval = log_interval
+        self.last_log_time = self.start_time
+        self._token_count = 0
+
+    def __call__(self, input_ids, scores, **kwargs):
+        self._token_count = input_ids.shape[-1]
+        now = time.time()
+        elapsed = now - self.start_time
+
+        # Progress logging — so user knows it's not stuck
+        if now - self.last_log_time >= self.log_interval:
+            logger.info(f"  ⏳ Generating... {self._token_count} tokens, {elapsed:.0f}s elapsed")
+            self.last_log_time = now
+
+        # Timeout check
+        if elapsed > self.max_seconds:
+            logger.warning(f"⚠️ Generation timeout after {elapsed:.0f}s ({self._token_count} tokens), stopping")
+            return True
+
+        return False
 
 
 def process_vision_info_qwen(messages):
@@ -79,18 +110,34 @@ class OCREngine:
 
         input_len = inputs["input_ids"].shape[-1]
 
-        with torch.inference_mode():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=config.GEMMA_MAX_TOKENS,
-                do_sample=True,
-                temperature=config.GEMMA_TEMPERATURE,
-                top_p=config.GEMMA_TOP_P,
-                top_k=config.GEMMA_TOP_K,
-                repetition_penalty=config.GEMMA_REPETITION_PENALTY,
-            )
+        # Safety: timeout + progress logging
+        stopping = StoppingCriteriaList([SafeStoppingCriteria(
+            max_seconds=config.GENERATION_TIMEOUT_SEC,
+        )])
+
+        try:
+            with torch.inference_mode():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=config.GEMMA_MAX_TOKENS,
+                    do_sample=True,
+                    temperature=config.GEMMA_TEMPERATURE,
+                    top_p=config.GEMMA_TOP_P,
+                    top_k=config.GEMMA_TOP_K,
+                    repetition_penalty=config.GEMMA_REPETITION_PENALTY,
+                    no_repeat_ngram_size=config.NO_REPEAT_NGRAM_SIZE,
+                    stopping_criteria=stopping,
+                )
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                logger.error("⚠️ CUDA OOM during Gemma generation!")
+                torch.cuda.empty_cache()
+                gc.collect()
+                return {"raw_text": "OOM_ERROR"}
+            raise
 
         raw = processor.decode(outputs[0][input_len:], skip_special_tokens=True).strip()
+        logger.info(f"  📝 Gemma generated {len(raw)} chars")
 
         del inputs, outputs
         gc.collect()
@@ -162,25 +209,40 @@ class OCREngine:
 
         input_len = inputs.input_ids.shape[1]
 
-        with torch.inference_mode():
-            generated_ids = model.generate(
-                **inputs,
-                max_new_tokens=config.QWEN_MAX_TOKENS,
-                min_new_tokens=config.QWEN_MIN_TOKENS,
-                do_sample=True,
-                temperature=config.QWEN_TEMPERATURE,
-                top_p=config.QWEN_TOP_P,
-                top_k=config.QWEN_TOP_K,
-                repetition_penalty=config.QWEN_REPETITION_PENALTY,
-                pad_token_id=processor.tokenizer.eos_token_id,
-                eos_token_id=processor.tokenizer.eos_token_id,
-            )
+        # Safety: timeout + progress logging
+        stopping = StoppingCriteriaList([SafeStoppingCriteria(
+            max_seconds=config.GENERATION_TIMEOUT_SEC,
+        )])
 
+        logger.info(f"  🚀 Starting generation (max {config.QWEN_MAX_TOKENS} tokens)...")
+        try:
+            with torch.inference_mode():
+                generated_ids = model.generate(
+                    **inputs,
+                    max_new_tokens=config.QWEN_MAX_TOKENS,
+                    do_sample=config.QWEN_DO_SAMPLE,
+                    repetition_penalty=config.QWEN_REPETITION_PENALTY,
+                    no_repeat_ngram_size=config.NO_REPEAT_NGRAM_SIZE,
+                    pad_token_id=processor.tokenizer.eos_token_id,
+                    eos_token_id=processor.tokenizer.eos_token_id,
+                    stopping_criteria=stopping,
+                )
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                logger.error("⚠️ CUDA OOM during Qwen generation!")
+                torch.cuda.empty_cache()
+                gc.collect()
+                return "[OOM_ERROR - try reducing image size or disabling multi-pass]"
+            raise
+
+        gen_tokens = generated_ids.shape[-1] - input_len
         output = processor.batch_decode(
             generated_ids[:, input_len:],
             skip_special_tokens=True,
             clean_up_tokenization_spaces=True,
         )[0].strip()
+
+        logger.info(f"  ✅ Generated {gen_tokens} tokens → {len(output)} chars")
 
         del inputs, generated_ids
         gc.collect()
@@ -192,20 +254,17 @@ class OCREngine:
 
     def _run_qwen_multipass(self, original_image: Image.Image) -> str:
         """
-        Run OCR 5 times with different preprocessing and prompts.
-        Then merge using consensus voting for maximum accuracy.
+        Run OCR with 2 passes using light preprocessing for VLMs.
+        Modern VLMs (Qwen2.5-VL) work best with natural color images —
+        heavy CV preprocessing (grayscale, binarization) destroys quality.
         
-        Pass 1: Standard Arabic prompt, standard resolution
+        Pass 1: Arabic prompt, high resolution
         Pass 2: English prompt, high resolution
-        Pass 3: Detail-focused Arabic, enhanced contrast
-        Pass 4: Table/structure-focused, standard resolution
-        Pass 5: Verification Arabic, different preprocessing
+        Then merge using consensus voting.
         """
         if not config.MULTIPASS_ENABLED:
-            # Single pass fallback
-            img = full_preprocess_pipeline(
-                original_image, for_model="qwen", max_width=1600,
-            )
+            # Single pass fallback — use light preprocessing
+            img = light_preprocess_vlm(original_image, max_width=2000)
             return self._run_qwen_single(img, config.OCR_PROMPT)
 
         num_passes = config.MULTIPASS_COUNT
@@ -213,51 +272,18 @@ class OCREngine:
 
         passes = []
 
-        # ===== PASS 1: Standard — Arabic prompt, standard resolution =====
-        logger.info("  Pass 1/5: Standard Arabic...")
-        img1 = full_preprocess_pipeline(
-            original_image, for_model="qwen", max_width=1600,
-        )
+        # ===== PASS 1: Arabic prompt, high resolution =====
+        logger.info(f"  Pass 1/{num_passes}: Arabic OCR...")
+        img1 = light_preprocess_vlm(original_image, max_width=2000)
         text1 = self._run_qwen_single(img1, config.OCR_PROMPT)
-        passes.append(("standard_ar", text1))
+        passes.append(("arabic", text1))
 
-        # ===== PASS 2: High resolution — English prompt =====
-        logger.info("  Pass 2/5: High resolution English...")
-        img2 = full_preprocess_pipeline(
-            original_image, for_model="qwen", max_width=2048,
-        )
-        text2 = self._run_qwen_single(img2, config.OCR_PROMPT_EN)
-        passes.append(("highres_en", text2))
-
-        # ===== PASS 3: Detail focus — Arabic prompt, enhanced contrast =====
-        logger.info("  Pass 3/5: Detail focus Arabic...")
-        img3 = full_preprocess_pipeline(
-            original_image, for_model="qwen", max_width=1600,
-            extra_contrast=True,
-        )
-        text3 = self._run_qwen_single(img3, config.OCR_PROMPT_DETAIL)
-        passes.append(("detail_ar", text3))
-
-        # ===== PASS 4: Table/structure focus =====
-        if num_passes >= 4:
-            logger.info("  Pass 4/5: Table/structure focus...")
-            img4 = full_preprocess_pipeline(
-                original_image, for_model="qwen", max_width=1600,
-                enhance_handwriting=True,
-            )
-            text4 = self._run_qwen_single(img4, config.OCR_PROMPT_TABLE)
-            passes.append(("table_focus", text4))
-
-        # ===== PASS 5: Verification pass — different preprocessing =====
-        if num_passes >= 5:
-            logger.info("  Pass 5/5: Verification pass...")
-            img5 = full_preprocess_pipeline(
-                original_image, for_model="qwen", max_width=1800,
-                extra_contrast=True,
-                enhance_handwriting=True,
-            )
-            text5 = self._run_qwen_single(img5, config.OCR_PROMPT_VERIFY)
-            passes.append(("verify_ar", text5))
+        # ===== PASS 2: English prompt, high resolution =====
+        if num_passes >= 2:
+            logger.info(f"  Pass 2/{num_passes}: English OCR...")
+            img2 = light_preprocess_vlm(original_image, max_width=2000)
+            text2 = self._run_qwen_single(img2, config.OCR_PROMPT_EN)
+            passes.append(("english", text2))
 
         # ===== MERGE: Consensus voting =====
         texts = [t for _, t in passes]
@@ -686,10 +712,9 @@ class OCREngine:
                 while quality == "poor" and attempt <= config.QUALITY_RETRY_MAX_ATTEMPTS:
                     logger.warning(f"⚠️ Quality: {quality} | Issues: {issues} | Retry {attempt}/{config.QUALITY_RETRY_MAX_ATTEMPTS}")
                     
-                    # Retry with different preprocessing
-                    retry_img = full_preprocess_pipeline(
-                        first_page, for_model="qwen", max_width=2048,
-                        extra_contrast=True, enhance_handwriting=True,
+                    # Retry with light preprocessing (VLM-friendly)
+                    retry_img = light_preprocess_vlm(
+                        first_page, max_width=1800,
                     )
                     retry_text = self._run_qwen_single(retry_img, config.OCR_PROMPT_VERIFY)
                     retry_cleaned = clean_ocr_text(retry_text)
@@ -735,7 +760,7 @@ class OCREngine:
 
         # Run OCR
         if custom_prompt:
-            img = full_preprocess_pipeline(first_page, for_model="qwen", max_width=1600)
+            img = light_preprocess_vlm(first_page, max_width=1600)
             raw_ocr = self._run_qwen_single(img, custom_prompt)
         else:
             raw_ocr = self._run_qwen_multipass(first_page)

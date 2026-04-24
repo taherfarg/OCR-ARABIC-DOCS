@@ -40,82 +40,24 @@ CLASSIFIER_PROMPT = """Analyze this document image carefully and extract the fol
 
 IMPORTANT: Respond ONLY with valid JSON. Do not include any text before or after the JSON."""
 
-OCR_MODEL_ID = "sherif1313/Arabic-English-handwritten-OCR-v3"
+OCR_MODEL_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
 
-# ===== OCR PROMPTS — 5 diverse prompts for maximum coverage =====
+# ===== OCR PROMPTS — Short, focused, anti-hallucination =====
 
-# Pass 1: Primary Arabic prompt — comprehensive extraction
-OCR_PROMPT = """أنت خبير في قراءة المستندات العربية والإنجليزية. قم باستخراج النص الكامل من هذه الصورة بدقة تامة 100%.
+# Pass 1: Arabic OCR — short prompt, explicit anti-hallucination
+OCR_PROMPT = """اقرأ كل النص الموجود في هذه الصورة من الأعلى إلى الأسفل. اكتب النص بالضبط كما يظهر بدون أي إضافة أو تعديل أو شرح. لا تضف أي نص ليس في الصورة."""
 
-التعليمات الصارمة:
-1. اقرأ كل حرف وكل كلمة وكل سطر من البداية إلى النهاية بدون أي اختصار أو حذف أو إضافة
-2. حافظ على ترتيب الأسطر والفقرات بالضبط كما تظهر في الصورة من الأعلى إلى الأسفل
-3. استخرج جميع الأرقام والتواريخ والمبالغ بدقة متناهية — لا تغير أي رقم
-4. حافظ على البيانات الجدولية مع المحاذاة الصحيحة والأعمدة
-5. اكتب النص العربي كما هو بالضبط والنص الإنجليزي كما هو بالضبط
-6. لا تضف أي تعليقات أو تفسيرات أو تصحيحات من عندك
-7. إذا كان هناك نص مكتوب بخط اليد، اقرأه بعناية فائقة كلمة بكلمة
-8. لا تتجاهل أي نص حتى لو كان غير واضح تماماً — حاول قراءته
-9. حافظ على المسافات والتنسيق الأصلي قدر الإمكان
-10. إذا كان هناك ختم أو توقيع، اكتب [ختم] أو [توقيع]
+# Pass 2: English OCR — short prompt, explicit anti-hallucination
+OCR_PROMPT_EN = """Read all text in this image from top to bottom. Write the text exactly as it appears. Do not add, explain, or modify anything. Do not offer help or suggestions. Only output what is written in the image."""
 
-ابدأ بكتابة النص المستخرج بالضبط كما يظهر:"""
+# Structured extraction — for forms/vouchers/invoices
+OCR_PROMPT_STRUCTURED = """Extract all fields and values from this document. Output each field on a new line as: Field: Value
+Include all names, numbers, amounts, dates, and account numbers exactly as written. Do not add anything not in the image."""
 
-# Pass 2: English prompt — for mixed/English documents
-OCR_PROMPT_EN = """You are an expert OCR reader for Arabic and English documents. Extract ALL text from this document image with 100% accuracy.
-
-Strict rules:
-1. Read every single character, word, and line from top to bottom without any omission or addition
-2. For Arabic text: read right to left. For English text: read left to right
-3. Preserve the exact line order and paragraph structure as they appear
-4. Extract all numbers, dates, and monetary amounts with perfect precision — never change any digit
-5. Keep table data with proper column alignment using spaces
-6. Write Arabic text exactly as written and English text exactly as written
-7. Pay extreme attention to handwritten text — read it word by word carefully
-8. Do NOT add any comments, explanations, or text not in the image
-9. Do NOT skip any text even if partially visible — try your best to read it
-10. Preserve original spacing and formatting as much as possible
-11. If there is a stamp or signature, write [stamp] or [signature]
-
-Begin the extracted text exactly as it appears:"""
-
-# Pass 3: Detail-focused Arabic prompt — for numbers, names, fine details
-OCR_PROMPT_DETAIL = """اقرأ هذا المستند بعناية شديدة جداً واستخرج كل التفاصيل:
-- جميع الأسماء (أشخاص، شركات، مؤسسات، بنوك، دوائر حكومية) كما هي مكتوبة بالضبط حرفياً
-- جميع الأرقام (أرقام الحسابات، أرقام المراجع، المبالغ، أرقام الفواتير، أرقام الهواتف) بدون أي تغيير
-- جميع التواريخ بالتنسيق الأصلي بالضبط
-- جميع البيانات الجدولية مع الحفاظ على الأعمدة والمحاذاة
-- النص المكتوب بخط اليد إن وجد — اقرأه حرفاً حرفاً
-- جميع الأختمة والتوقيعات — اكتب [ختم] أو [توقيع]
-- لا تختصر ولا تحذف ولا تضيف أي شيء
-
-اكتب النص الكامل بالضبط:"""
-
-# Pass 4: Table/structure-focused prompt — for structured documents
-OCR_PROMPT_TABLE = """Extract all content from this document with special focus on structure and tables.
-
-Instructions:
-1. Read every field label and its value — do not miss any field
-2. For tables: extract each row completely with all column values
-3. For forms: extract each field name followed by its value
-4. Preserve the exact numeric values — amounts, account numbers, reference numbers
-5. Read both Arabic and English text exactly as written
-6. For any checkboxes or marked fields, indicate [checked] or [unchecked]
-7. Maintain the visual structure using line breaks and spacing
-
-Write the complete extracted text:"""
-
-# Pass 5: Verification/correction prompt — asks model to be extra careful
-OCR_PROMPT_VERIFY = """هذه صورة مستند رسمي. اقرأها بعناية مضاعفة وتأكد من كل كلمة:
-
-- اقرأ كل سطر مرتين في ذهنك قبل كتابته
-- تأكد من كل رقم وعلامة ترقيم
-- إذا كانت هناك كلمة غير واضحة، اكتب أقرب قراءة صحيحة لها
-- لا تترك أي سطر بدون قراءة
-- انتبه بشكل خاص للأسماء والأرقام والمبالغ
-- حافظ على ترتيب النص بالضبط كما في الصورة
-
-اكتب النص الكامل والمؤكد:"""
+# Legacy prompts (kept for reference, not used in default pipeline)
+OCR_PROMPT_DETAIL = OCR_PROMPT
+OCR_PROMPT_TABLE = OCR_PROMPT_STRUCTURED
+OCR_PROMPT_VERIFY = OCR_PROMPT
 
 # MODE
 PROCESSING_MODE = "full"
@@ -123,27 +65,33 @@ PROCESSING_MODE = "full"
 # IMAGE PREPROCESSING
 GEMMA_MAX_WIDTH = 1024
 GEMMA_CONTRAST = 1.5
-QWEN_MAX_SIZE = 1600
+QWEN_MAX_SIZE = 2000
 QWEN_MIN_SIZE = 800
 PDF_DPI = 400
 
 # GENERATION — tuned for maximum accuracy
-GEMMA_MAX_TOKENS = 4096
+GEMMA_MAX_TOKENS = 2048
 GEMMA_TEMPERATURE = 0.05
 GEMMA_REPETITION_PENALTY = 1.2
 GEMMA_TOP_P = 0.85
 GEMMA_TOP_K = 40
 
-QWEN_MAX_TOKENS = 8192
-QWEN_MIN_TOKENS = 200
-QWEN_TEMPERATURE = 0.05
-QWEN_TOP_P = 0.85
-QWEN_REPETITION_PENALTY = 1.1
-QWEN_TOP_K = 40
+QWEN_MAX_TOKENS = 1024            # Single page rarely needs more than 800 tokens
+QWEN_MIN_TOKENS = 0                # Don't force generation past content end
+QWEN_TEMPERATURE = 1.0             # Unused with do_sample=False (greedy)
+QWEN_TOP_P = 1.0                   # Unused with do_sample=False (greedy)
+QWEN_REPETITION_PENALTY = 1.1      # Mild — too high causes word avoidance
+QWEN_TOP_K = None                  # Unused with do_sample=False (greedy)
+QWEN_DO_SAMPLE = False             # Greedy decoding for deterministic OCR
 
-# MULTI-PASS SETTINGS — 5 passes for maximum accuracy
+# GENERATION SAFETY — prevent hangs and infinite loops
+GENERATION_TIMEOUT_SEC = 300       # Max seconds per generation call (5 min)
+NO_REPEAT_NGRAM_SIZE = 6           # Prevent repetition loops in generation
+QWEN_MAX_PIXELS = 2007040          # 1600*28*28 — more visual tokens for small text
+
+# MULTI-PASS SETTINGS — 2 passes (Arabic + English) + optional structured
 MULTIPASS_ENABLED = True
-MULTIPASS_COUNT = 5
+MULTIPASS_COUNT = 2
 MULTIPASS_MERGE_STRATEGY = "best_line"  # "best_line" or "longest"
 
 # QUALITY GATE — retry if quality is poor

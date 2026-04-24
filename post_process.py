@@ -44,6 +44,122 @@ def remove_repetitions(text: str, max_repeats: int = 2) -> str:
     return '\n'.join(cleaned)
 
 
+def remove_prefix_loops(text: str, prefix_len: int = 10, max_consecutive: int = 5) -> str:
+    """
+    Detect and remove hallucination loops where the model generates many
+    consecutive lines that share the same prefix (e.g., "الى جانب الشر...").
+
+    This catches patterns like:
+        الى جانب التحرير
+        الى جانب التوفيق
+        الى جانب التبرع
+        الى جانب الامتياز
+        ... (hundreds more)
+
+    Also catches numbered list hallucinations:
+        No. 31
+        No. 32
+        No. 33
+        ... (dozens more)
+
+    These are model hallucinations — real documents don't have 5+ consecutive
+    lines all starting with the same phrase or pattern.
+    """
+    lines = text.split('\n')
+    if len(lines) < max_consecutive:
+        return text
+
+    cleaned = []
+    i = 0
+    total_removed = 0
+
+    while i < len(lines):
+        # Check if we're entering a prefix loop
+        if i + max_consecutive <= len(lines):
+            current_stripped = lines[i].strip()
+
+            # === Check 1: Numbered list pattern (e.g., "No. 31", "No. 32") ===
+            numbered_match = re.match(r'^(No\.?\s*\d+)', current_stripped, re.IGNORECASE)
+            if numbered_match:
+                # Count consecutive numbered lines matching "No. XX" pattern
+                loop_count = 0
+                j = i
+                while j < len(lines):
+                    if re.match(r'^No\.?\s*\d+', lines[j].strip(), re.IGNORECASE):
+                        loop_count += 1
+                        j += 1
+                        continue
+                    break
+
+                if loop_count >= max_consecutive:
+                    logger.warning(
+                        f"🔄 Removed numbered list loop: 'No. XX' "
+                        f"×{loop_count} consecutive lines"
+                    )
+                    total_removed += loop_count
+                    i = j
+                    continue
+
+            # === Check 2: Prefix-based loop (e.g., "الى جانب الشر...") ===
+            if len(current_stripped) >= prefix_len:
+                current_prefix = _normalize_prefix(current_stripped[:prefix_len])
+
+                # Count how many consecutive lines share this prefix
+                loop_count = 0
+                j = i
+                while j < len(lines):
+                    line_stripped = lines[j].strip()
+                    if len(line_stripped) >= prefix_len:
+                        line_prefix = _normalize_prefix(line_stripped[:prefix_len])
+                        if line_prefix == current_prefix:
+                            loop_count += 1
+                            j += 1
+                            continue
+                    # Prefix changed — check if it's a sub-prefix loop
+                    # (e.g., "الى جانب الشر" → "الى جانب السع")
+                    if len(line_stripped) >= prefix_len:
+                        line_prefix = _normalize_prefix(line_stripped[:prefix_len])
+                        # Check if still sharing a shorter prefix (6 chars)
+                        short_current = _normalize_prefix(current_stripped[:6])
+                        short_line = _normalize_prefix(line_stripped[:6])
+                        if short_current == short_line and short_current:
+                            loop_count += 1
+                            j += 1
+                            continue
+                    break
+
+                if loop_count >= max_consecutive:
+                    # This is a hallucination loop — skip all of it
+                    logger.warning(
+                        f"🔄 Removed prefix loop: '{current_stripped[:30]}...' "
+                        f"×{loop_count} consecutive lines"
+                    )
+                    total_removed += loop_count
+                    i = j
+                    continue
+
+        cleaned.append(lines[i])
+        i += 1
+
+    if total_removed > 0:
+        logger.info(f"🔄 Total hallucination-loop lines removed: {total_removed}")
+
+    return '\n'.join(cleaned)
+
+
+def _normalize_prefix(s: str) -> str:
+    """Normalize a string prefix for comparison."""
+    s = s.strip().lower()
+    # Remove Arabic diacritics
+    s = re.sub(r'[\u0617-\u061A\u064B-\u0652]', '', s)
+    # Normalize Arabic variants
+    s = s.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
+    s = s.replace('ة', 'ه').replace('ى', 'ي')
+    # Collapse whitespace
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+
 def remove_near_duplicates(text: str, max_repeats: int = 2) -> str:
     """
     Remove near-duplicate lines (same content after normalization).
@@ -247,6 +363,7 @@ def clean_ocr_text(text: str) -> str:
     # 4. Remove repetitions
     text = remove_repetitions(text, max_repeats=2)
     text = remove_near_duplicates(text, max_repeats=2)
+    text = remove_prefix_loops(text, prefix_len=10, max_consecutive=5)
 
     # 5. Apply dictionary corrections (major accuracy boost!)
     text = apply_all_corrections(text)

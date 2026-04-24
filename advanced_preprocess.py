@@ -467,3 +467,47 @@ def full_preprocess_pipeline(
 
     logger.info(f"✅ Preprocessed: {result.size} ({for_model} mode)")
     return result
+
+
+def light_preprocess_vlm(
+    image_input: Union[str, Path, Image.Image],
+    max_width: int = 1600,
+) -> Image.Image:
+    """
+    Light preprocessing for modern VLMs (Qwen2.5-VL, etc.).
+
+    Modern VLMs are trained on natural color images and work best when
+    the image looks natural. Heavy CV preprocessing (grayscale, binarization,
+    morphological ops) DESTROYS the image for these models.
+
+    This function only does:
+    1. Load image
+    2. Convert to RGB
+    3. Resize to fit max_width while preserving aspect ratio
+    4. Optional: slight sharpening for scanned documents
+
+    Returns: RGB PIL Image
+    """
+    # Load
+    if isinstance(image_input, (str, Path)):
+        image = Image.open(str(image_input))
+    else:
+        image = image_input
+
+    original_size = image.size
+    logger.info(f"🖼️ Original: {original_size}")
+
+    # 1. Ensure RGB
+    image = image.convert("RGB")
+
+    # 2. Resize if too large
+    if image.width > max_width:
+        ratio = max_width / float(image.width)
+        new_h = int(image.height * ratio)
+        image = image.resize((max_width, new_h), Image.LANCZOS)
+
+    # 3. Light sharpening for scanned documents
+    image = sharpen_image(image, factor=1.2)
+
+    logger.info(f"✅ Light preprocessed: {image.size} (VLM mode)")
+    return image

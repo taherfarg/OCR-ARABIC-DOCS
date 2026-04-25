@@ -24,6 +24,7 @@ ARABIC_CORRECTIONS = {
     'تفاضيل': 'تفاصيل',
     'تفاصل': 'تفاصيل',
     'تفاصي': 'تفاصيل',
+    'تفاصيلل': 'تفاصيل',
 
     # === فاتورة (invoice) ===
     'الكاتورة': 'الفاتورة',
@@ -54,11 +55,19 @@ ARABIC_CORRECTIONS = {
     'الداخلى': 'الداخلي',
 
     # === مستند صرف (payment voucher) ===
+    'استند الصرف': 'مستند الصرف',
+    'استندالصرف': 'مستند الصرف',
     'مستندصرف': 'مستند صرف',
     'مستندالصرف': 'مستند الصرف',
     'مستندصرفنقدي': 'مستند صرف نقدي',
     'مستنداتالصرف': 'مستندات الصرف',
     'مستنداتصرف': 'مستندات صرف',
+
+    # === مدفوعات (payments) ===
+    'المدوبات': 'المدفوعات',
+    'المدفوعت': 'المدفوعات',
+    'المدفوعا': 'المدفوعات',
+    'للمدوبات': 'للمدفوعات',
 
     # === توزيع (distribution) ===
     'تنزيع': 'توزيع',
@@ -68,7 +77,6 @@ ARABIC_CORRECTIONS = {
     # === حسابي (accounting) ===
     'الحسبي': 'الحسابي',
     'الحسباي': 'الحسابي',
-    'حسابي': 'حسابي',
 
     # === دائنة (credit) ===
     'الدائمة': 'الدائنة',
@@ -95,11 +103,8 @@ ARABIC_CORRECTIONS = {
     'الشؤون الادارية': 'الشؤون الإدارية',
     'الشؤون الاداريه': 'الشؤون الإدارية',
     'الشؤونالإدارية': 'الشؤون الإدارية',
-    'المالية': 'المالية',
     'الماليه': 'المالية',
-    'الدائرة': 'الدائرة',
     'الدائره': 'الدائرة',
-    'دائرة المالية': 'دائرة المالية',
     'دائرةالمالية': 'دائرة المالية',
 
     # === Abu Dhabi specific ===
@@ -113,7 +118,6 @@ ARABIC_CORRECTIONS = {
     'حكومة أبو ظبي': 'حكومة أبوظبي',
 
     # === UAE terms ===
-    'الإمارات العربية المتحدة': 'الإمارات العربية المتحدة',
     'الامارات العربية المتحدة': 'الإمارات العربية المتحدة',
     'الامارات العربيه المتحده': 'الإمارات العربية المتحدة',
     'دولةالإمارات': 'دولة الإمارات',
@@ -124,7 +128,6 @@ ARABIC_CORRECTIONS = {
     'صافى الدفعة': 'صافي الدفعة',
     'المبلغالإجمالي': 'المبلغ الإجمالي',
     'المبلغ الاجمالي': 'المبلغ الإجمالي',
-    'الضريبة': 'الضريبة',
     'الضريبه': 'الضريبة',
     'القيمةالمضافة': 'القيمة المضافة',
     'القيمه المضافه': 'القيمة المضافة',
@@ -150,26 +153,18 @@ ARABIC_CORRECTIONS = {
     'التوزيعالحسابي': 'التوزيع الحسابي',
 
     # === Common Arabic OCR confusions ===
-    'لاال': 'لالا',
     'اللغ': 'اللغة',
     'اللغه': 'اللغة',
     'النسخه': 'النسخة',
     'النسخةالأصلية': 'النسخة الأصلية',
     'الرقمالمرجعي': 'الرقم المرجعي',
     'الرقمالمرجعى': 'الرقم المرجعي',
-    'الملاحظات': 'الملاحظات',
-    'الملاحظات': 'الملاحظات',
-    'التوقيع': 'التوقيع',
-    'التوقيعات': 'التوقيعات',
-    'الختم': 'الختم',
-    'الاعتماد': 'الاعتماد',
-    'الاعتماده': 'الاعتمادة',
-    'الموافقة': 'الموافقة',
     'الموافقه': 'الموافقة',
-    'المراجعة': 'المراجعة',
     'المراجعه': 'المراجعة',
-    'التنفيذ': 'التنفيذ',
     'التنفيذه': 'التنفيذية',
+    'التوییح': 'التوضيح',
+    'التوضییح': 'التوضيح',
+    'التوظيح': 'التوضيح',
 
     # === Legal terms ===
     'المادةالأولى': 'المادة الأولى',
@@ -204,29 +199,20 @@ ARABIC_CORRECTIONS = {
     'دائرةالشؤونالقانونية': 'دائرة الشؤون القانونية',
     'وزارةالمالية': 'وزارة المالية',
     'ديوانوليالعهد': 'ديوان ولي العهد',
-    'ديوانوليالعهد': 'ديوان ولي العهد',
     'مجلسأبوظبي': 'مجلس أبوظبي',
     'هيئةأبوظبي': 'هيئة أبوظبي',
 
     # === Amount/currency ===
     'درهمإماراتي': 'درهم إماراتي',
     'دراهمإماراتية': 'دراهم إماراتية',
-    'د.إ': 'د.إ',
-    'AED': 'AED',
     'ريالسعودي': 'ريال سعودي',
-    'ر.س': 'ر.س',
 
     # === Misc common errors ===
-    'الإجمالي': 'الإجمالي',
     'الإجمالى': 'الإجمالي',
-    'المجموع': 'المجموع',
     'المجموعالفرعي': 'المجموع الفرعي',
-    'الكمية': 'الكمية',
     'الكميه': 'الكمية',
-    'السعر': 'السعر',
     'سعرالوحدة': 'سعر الوحدة',
     'سعرالوحده': 'سعر الوحدة',
-    'الوصف': 'الوصف',
     'وصفالبند': 'وصف البند',
     'الإجماليالكلي': 'الإجمالي الكلي',
     'صافيالمبلغ': 'صافي المبلغ',
@@ -297,6 +283,16 @@ ENGLISH_CORRECTIONS = {
     'Sree code': 'Swift Code',
     'Swft Code': 'Swift Code',
     'Swif Code': 'Swift Code',
+    'SWIFT COE': 'SWIFT CODE',
+    'Swift Coe': 'Swift Code',
+    'STANDARD CHARGED BANK': 'STANDARD CHARTERED BANK',
+    'STANDARD CHARLTERED BANK': 'STANDARD CHARTERED BANK',
+    'STANDARD CHARLTERED': 'STANDARD CHARTERED',
+    'STANDA CHARLTERED': 'STANDARD CHARTERED',
+    'STANDRD CHARTERED': 'STANDARD CHARTERED',
+    'STANDARED CHARTERED': 'STANDARD CHARTERED',
+    'CHARTRED BANK': 'CHARTERED BANK',
+    'CHARTED BANK': 'CHARTERED BANK',
 
     # Common typos
     'G.OVT': 'GOVT',
@@ -340,11 +336,18 @@ ENGLISH_CORRECTIONS = {
     'Purhase': 'Purchase',
 
     # Arabic-English mixed errors
-    'Emirati': 'Emirati',
     'Abu Dhab': 'Abu Dhabi',
+    'Abu Dhabii': 'Abu Dhabi',
+    'ABU DUBI': 'ABU DHABI',
+    'Abu Dubi': 'Abu Dhabi',
     'AbuDhabi': 'Abu Dhabi',
     'U A E': 'UAE',
     'U.A.E.': 'UAE',
+
+    # Document field label errors
+    'BV No': 'PV No',
+    'BV NO': 'PV NO',
+    'BV Number': 'PV Number',
 }
 
 # Number pattern corrections
@@ -371,21 +374,16 @@ def apply_arabic_corrections(text: str) -> str:
 
 
 def apply_english_corrections(text: str) -> str:
-    """Apply English word corrections (case-insensitive where needed)."""
+    """Apply English word corrections (case-insensitive)."""
     count = 0
-    for wrong, correct in ENGLISH_CORRECTIONS.items():
-        if wrong in text:
-            text = text.replace(wrong, correct)
-            count += 1
-
-    # Also try case-insensitive for some
     for wrong, correct in ENGLISH_CORRECTIONS.items():
         pattern = re.compile(re.escape(wrong), re.IGNORECASE)
         if pattern.search(text):
             text = pattern.sub(correct, text)
+            count += 1
 
     if count > 0:
-        logger.debug(f"📝 Applied {count} English corrections")
+        logger.debug(f"Applied {count} English corrections")
     return text
 
 
@@ -429,17 +427,15 @@ def normalize_numbers_in_fields(text: str) -> str:
 
 def fix_table_alignment(text: str) -> str:
     """
-    Fix table data that got jumbled.
-    Normalize tab/space alignment.
+    Normalize tab alignment only — don't convert spaces to tabs
+    as that destroys indentation in legal documents.
     """
     lines = text.split('\n')
     fixed = []
 
     for line in lines:
-        # Replace multiple tabs with single tab
+        # Only normalize multiple tabs
         line = re.sub(r'\t{2,}', '\t', line)
-        # Replace 3+ spaces with tab (likely table column)
-        line = re.sub(r' {3,}', '\t', line)
         fixed.append(line)
 
     return '\n'.join(fixed)
@@ -448,67 +444,87 @@ def fix_table_alignment(text: str) -> str:
 def fix_common_arabic_patterns(text: str) -> str:
     """
     Fix common Arabic text patterns that OCR often gets wrong.
-    Context-aware corrections based on surrounding text.
     """
-    # Fix disconnected Arabic words (common OCR error)
-    # Example: "ال مبلغ" → "المبلغ"
-    text = re.sub(r'ال\s+([أ-ي])', r'ال\1', text)
-    
-    # Fix "ال ال" → "ال" (double definite article)
-    text = re.sub(r'ال\s*ال', 'ال', text)
-    
-    # Fix disconnected "و" (and) prefix
-    text = re.sub(r'و\s{2,}([أ-ي])', r'و \1', text)
-    
-    # Fix "ب" prefix disconnected
-    text = re.sub(r'ب\s{2,}([أ-ي])', r'ب\1', text)
-    
-    # Fix "لل" prefix disconnected
-    text = re.sub(r'لل\s+([أ-ي])', r'لل\1', text)
-    
-    # Fix common date format issues
-    # Arabic dates: DD/MM/YYYY or YYYY/MM/DD
+    # Fix disconnected definite article: "ال مبلغ" -> "المبلغ"
+    # Only match standalone "ال" at word boundary (after space or start of line),
+    # NOT "ال" at the end of another word like "قال"
+    text = re.sub(r'(?:^|(?<=\s))ال\s+(?=[؀-ۿ])', 'ال', text, flags=re.MULTILINE)
+
+    # Fix "ال ال" -> "ال" (double definite article from OCR stutter)
+    text = re.sub(r'(?:^|(?<=\s))ال\s+ال(?=[؀-ۿ])', 'ال', text, flags=re.MULTILINE)
+
+    # Fix disconnected "لل" prefix: "لل مدير" -> "للمدير"
+    text = re.sub(r'(?:^|(?<=\s))لل\s+(?=[؀-ۿ])', 'لل', text, flags=re.MULTILINE)
+
+    # Fix common date format issues (spaces around slashes)
     text = re.sub(r'(\d{1,2})\s*/\s*(\d{1,2})\s*/\s*(\d{4})', r'\1/\2/\3', text)
     text = re.sub(r'(\d{4})\s*/\s*(\d{1,2})\s*/\s*(\d{1,2})', r'\1/\2/\3', text)
-    
-    # Fix amount format: remove spaces in numbers
-    # Example: "1 000.00" → "1,000.00"
-    text = re.sub(r'(\d)\s{1}(\d{3})', r'\1,\2', text)
-    
+
     # Fix disconnected punctuation
     text = re.sub(r'\s+:\s+', ': ', text)
     text = re.sub(r'\s+;\s+', '; ', text)
-    
+
     return text
 
 
 def fix_ocr_artifacts(text: str) -> str:
-    """
-    Fix common OCR artifacts that aren't language-specific.
-    """
-    # Remove stray single characters that are likely noise
-    # But keep them if they're part of known abbreviations
+    """Fix common OCR artifacts that aren't language-specific."""
     lines = text.split('\n')
     fixed = []
-    
+
     for line in lines:
-        # Remove lines that are just dots or dashes
-        if re.match(r'^[\s.\-_—]+$', line):
-            continue
-        
         # Fix broken numbers: "O" instead of "0" in numeric contexts
         line = re.sub(r'(\d)O(\d)', r'\g<1>0\2', line)
         line = re.sub(r'O(\d{2,})', r'0\1', line)
-        
+
         # Fix "l" instead of "1" in numeric contexts
         line = re.sub(r'(\d)l(\d)', r'\g<1>1\2', line)
-        
+
         # Fix "S" instead of "5" in numeric contexts
         line = re.sub(r'(\d)S(\d)', r'\g<1>5\2', line)
-        
+
         fixed.append(line)
-    
+
     return '\n'.join(fixed)
+
+
+def fix_swift_codes(text: str) -> str:
+    """
+    Fix common SWIFT/BIC code OCR errors.
+    SWIFT codes are 8 or 11 chars: BANKCCLL or BANKCCLLBBB
+    where CC is the ISO country code.
+    """
+    # UAE country code: AE often misread as AS, AD
+    text = re.sub(r'\bSCBL(AS|AD)AD\b', 'SCBLAEAD', text)
+    text = re.sub(r'\bSCBL(AS|AD)33\b', 'SCBLAE33', text)
+
+    # Common SWIFT code misreads for UAE banks
+    # General pattern: fix "AS" or "AD" to "AE" in SWIFT-code-like strings
+    # Only in context of SWIFT/BIC labels
+    def fix_swift_country(m):
+        prefix = m.group(1)
+        code = m.group(2)
+        code = re.sub(r'^([A-Z]{4})(AS|AD)([A-Z0-9]{2,5})$', r'\1AE\3', code)
+        return prefix + code
+
+    text = re.sub(
+        r'((?:SWIFT|BIC|S\.?W\.?I\.?F\.?T)\s*(?:CODE|COE|COD)?\s*:?\s*)([A-Z]{8,11})',
+        fix_swift_country,
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    return text
+
+
+def fix_repeated_arabic_chars(text: str) -> str:
+    """
+    Fix OCR stutter where a trailing Arabic letter is doubled.
+    E.g., "تفاصيلل" → "تفاصيل", "المبلغغ" → "المبلغ"
+    Only fixes consecutive duplicate Arabic letters at word boundaries.
+    """
+    text = re.sub(r'([؀-ۿ])\1(?=\s|$|[^؀-ۿ])', r'\1', text)
+    return text
 
 
 def apply_all_corrections(text: str) -> str:
@@ -521,23 +537,29 @@ def apply_all_corrections(text: str) -> str:
     # 1. Fix OCR artifacts first (before language-specific corrections)
     text = fix_ocr_artifacts(text)
 
-    # 2. Arabic corrections
+    # 2. Fix repeated trailing Arabic letters (e.g., "تفاصيلل" → "تفاصيل")
+    text = fix_repeated_arabic_chars(text)
+
+    # 3. Arabic corrections
     text = apply_arabic_corrections(text)
 
-    # 3. English corrections
+    # 4. English corrections
     text = apply_english_corrections(text)
 
-    # 4. Common Arabic pattern fixes
+    # 5. Fix SWIFT/BIC codes
+    text = fix_swift_codes(text)
+
+    # 6. Common Arabic pattern fixes
     text = fix_common_arabic_patterns(text)
 
-    # 5. Number normalization
+    # 7. Number normalization
     text = normalize_numbers_in_fields(text)
 
-    # 6. Table alignment
+    # 8. Table alignment
     text = fix_table_alignment(text)
 
     if text != original:
         diff = sum(1 for a, b in zip(text, original) if a != b)
-        logger.info(f"📝 Dictionary corrections: {diff} chars changed")
+        logger.info(f"Dictionary corrections: {diff} chars changed")
 
     return text

@@ -56,9 +56,11 @@ async def extract_document(
             tmp.write(content)
             tmp_path = tmp.name
 
-        engine = get_engine()
-        result = engine.extract_from_document(tmp_path, custom_prompt=prompt)
-        Path(tmp_path).unlink(missing_ok=True)
+        try:
+            engine = get_engine()
+            result = engine.extract_from_document(tmp_path, custom_prompt=prompt)
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
 
         return JSONResponse(content=result)
     except Exception as e:

@@ -1,13 +1,11 @@
 """
 OCR engine with maximum accuracy improvements.
 
-Key improvements over v1:
-- 5-pass OCR with diverse prompts and preprocessing variations
+Key features:
+- Multi-pass OCR with diverse prompts (Arabic, English, Structured)
 - Quality-gated retry: re-process if output is poor
-- Improved consensus merge with character-level voting
-- Better line scoring with Arabic-specific heuristics
-- Verification pass that cross-checks results
-- Confidence tracking per line for transparency
+- Consensus merge with monotonic alignment and best-line fallback
+- Arabic-specific line scoring heuristics
 """
 import gc
 import json
@@ -250,20 +248,18 @@ class OCREngine:
 
         return output
 
-    # ===== MULTI-PASS OCR (5 passes for maximum accuracy) =====
+    # ===== MULTI-PASS OCR =====
 
     def _run_qwen_multipass(self, original_image: Image.Image) -> str:
         """
-        Run OCR with 2 passes using light preprocessing for VLMs.
-        Modern VLMs (Qwen2.5-VL) work best with natural color images —
-        heavy CV preprocessing (grayscale, binarization) destroys quality.
-        
-        Pass 1: Arabic prompt, high resolution
-        Pass 2: English prompt, high resolution
+        Run OCR with up to 3 passes using light preprocessing for VLMs.
+
+        Pass 1: Arabic prompt
+        Pass 2: English prompt
+        Pass 3: Structured extraction prompt
         Then merge using consensus voting.
         """
         if not config.MULTIPASS_ENABLED:
-            # Single pass fallback — use light preprocessing
             img = light_preprocess_vlm(original_image, max_width=2000)
             return self._run_qwen_single(img, config.OCR_PROMPT)
 
@@ -272,18 +268,25 @@ class OCREngine:
 
         passes = []
 
-        # ===== PASS 1: Arabic prompt, high resolution =====
+        # ===== PASS 1: Arabic prompt =====
         logger.info(f"  Pass 1/{num_passes}: Arabic OCR...")
         img1 = light_preprocess_vlm(original_image, max_width=2000)
         text1 = self._run_qwen_single(img1, config.OCR_PROMPT)
         passes.append(("arabic", text1))
 
-        # ===== PASS 2: English prompt, high resolution =====
+        # ===== PASS 2: English prompt =====
         if num_passes >= 2:
             logger.info(f"  Pass 2/{num_passes}: English OCR...")
             img2 = light_preprocess_vlm(original_image, max_width=2000)
             text2 = self._run_qwen_single(img2, config.OCR_PROMPT_EN)
             passes.append(("english", text2))
+
+        # ===== PASS 3: Structured extraction =====
+        if num_passes >= 3:
+            logger.info(f"  Pass 3/{num_passes}: Structured extraction...")
+            img3 = light_preprocess_vlm(original_image, max_width=2000)
+            text3 = self._run_qwen_single(img3, config.OCR_PROMPT_STRUCTURED)
+            passes.append(("structured", text3))
 
         # ===== MERGE: Consensus voting =====
         texts = [t for _, t in passes]
@@ -295,31 +298,27 @@ class OCREngine:
 
         return merged
 
-    # ===== IMPROVED MERGE: Consensus Voting with Character-Level Resolution =====
+    # ===== MERGE: Consensus Voting =====
 
     def _merge_ocr_results_consensus(self, *texts: str) -> str:
         """
         Merge multiple OCR passes using consensus voting.
-        
+
         Strategy:
-        1. Align lines across passes using fuzzy matching
-        2. For each line position, if 2+ passes agree → use that (high confidence)
+        1. Align lines across passes using monotonic fuzzy matching
+        2. For each line position, if 2+ passes agree → use that
         3. If all disagree → pick the best scored line
-        4. For disagreeing lines, try character-level voting to reconstruct
-        5. Detect and preserve extra lines that appear in multiple passes
         """
         if len(texts) == 1:
             return texts[0]
 
         all_lines = [t.split('\n') for t in texts]
 
-        # Remove empty lines but track their positions for reconstruction
         all_nonempty = []
         for lines in all_lines:
             nonempty = [(i, l) for i, l in enumerate(lines) if l.strip()]
             all_nonempty.append(nonempty)
 
-        # Use the longest non-empty result as the base structure
         lengths = [len(ne) for ne in all_nonempty]
         base_idx = lengths.index(max(lengths))
         base_lines = [l for _, l in all_nonempty[base_idx]]
@@ -327,7 +326,6 @@ class OCREngine:
         if not base_lines:
             return ""
 
-        # Align other passes to the base using fuzzy matching
         aligned = [[] for _ in range(len(base_lines))]
 
         for pass_idx, nonempty in enumerate(all_nonempty):
@@ -338,8 +336,9 @@ class OCREngine:
                     aligned[i].append(line)
                 continue
 
-            # Simple alignment: match each base line to best candidate in this pass
-            used = set()
+            # Monotonic alignment: enforce sequential order
+            # pass line j matched to base line i means j+1.. can only match i+1..
+            search_start = 0
             for i, base_line in enumerate(base_lines):
                 best_match = None
                 best_score = -1
@@ -347,21 +346,18 @@ class OCREngine:
 
                 base_norm = self._normalize_for_match(base_line)
 
-                for j, cand_line in enumerate(pass_lines):
-                    if j in used:
-                        continue
-                    cand_norm = self._normalize_for_match(cand_line)
+                for j in range(search_start, len(pass_lines)):
+                    cand_norm = self._normalize_for_match(pass_lines[j])
                     score = self._line_similarity(base_norm, cand_norm)
                     if score > best_score:
                         best_score = score
-                        best_match = cand_line
+                        best_match = pass_lines[j]
                         best_j = j
 
-                if best_match and best_score > 0.2:
+                if best_match and best_score > 0.3:
                     aligned[i].append(best_match)
-                    used.add(best_j)
+                    search_start = best_j + 1
 
-        # Now merge each position using consensus
         merged_lines = []
         for i, candidates in enumerate(aligned):
             if not candidates:
@@ -371,18 +367,11 @@ class OCREngine:
                 merged_lines.append(candidates[0])
                 continue
 
-            # Check for consensus — if 2+ candidates are very similar, use them
             consensus = self._find_consensus(candidates)
             if consensus:
                 merged_lines.append(consensus)
             else:
-                # No consensus — try character-level voting first
-                char_voted = self._character_level_vote(candidates)
-                if char_voted and len(char_voted) >= len(self._pick_best_line(candidates)) * 0.8:
-                    merged_lines.append(char_voted)
-                else:
-                    # Fall back to best scored line
-                    merged_lines.append(self._pick_best_line(candidates))
+                merged_lines.append(self._pick_best_line(candidates))
 
         return '\n'.join(merged_lines)
 
@@ -402,20 +391,24 @@ class OCREngine:
     def _line_similarity(self, a: str, b: str) -> float:
         """
         Compute similarity between two normalized lines.
-        Uses character-level overlap + word-level overlap + length similarity.
+        Uses bigram overlap (Dice coefficient) + word overlap + length similarity.
         """
         if not a or not b:
             return 0.0
 
-        # Character set overlap
-        set_a = set(a)
-        set_b = set(b)
-        if not set_a or not set_b:
-            return 0.0
+        # Bigram (character pair) overlap — Dice coefficient
+        def bigrams(s):
+            return [s[i:i+2] for i in range(len(s)-1)] if len(s) >= 2 else [s]
 
-        intersection = len(set_a & set_b)
-        union = len(set_a | set_b)
-        char_sim = intersection / union if union else 0.0
+        bg_a = bigrams(a)
+        bg_b = bigrams(b)
+        if bg_a and bg_b:
+            set_a = set(bg_a)
+            set_b = set(bg_b)
+            intersection = len(set_a & set_b)
+            bigram_sim = 2.0 * intersection / (len(set_a) + len(set_b))
+        else:
+            bigram_sim = 1.0 if a == b else 0.0
 
         # Word-level overlap (more weight)
         words_a = set(a.split())
@@ -430,20 +423,7 @@ class OCREngine:
         # Length similarity
         len_sim = min(len(a), len(b)) / max(len(a), len(b), 1)
 
-        # Substring similarity — bonus for shared substrings
-        sub_sim = 0.0
-        if len(a) > 5 and len(b) > 5:
-            # Check for common substrings of length 4+
-            min_len = min(len(a), len(b))
-            common_subs = 0
-            for k in range(4, min(min_len, 20)):
-                subs_a = set(a[i:i+k] for i in range(len(a)-k+1))
-                subs_b = set(b[i:i+k] for i in range(len(b)-k+1))
-                common_subs += len(subs_a & subs_b)
-            sub_sim = min(common_subs / max(len(a), len(b), 1), 1.0)
-
-        # Weighted combination
-        return 0.25 * char_sim + 0.40 * word_sim + 0.15 * len_sim + 0.20 * sub_sim
+        return 0.35 * bigram_sim + 0.45 * word_sim + 0.20 * len_sim
 
     def _find_consensus(self, candidates: List[str]) -> Optional[str]:
         """
@@ -485,37 +465,6 @@ class OCREngine:
 
         # No consensus
         return None
-
-    def _character_level_vote(self, candidates: List[str]) -> Optional[str]:
-        """
-        When lines disagree, try to reconstruct the best version by
-        voting character-by-character across all candidates.
-        
-        This handles cases where one pass got a character right
-        that another missed.
-        """
-        if len(candidates) < 2:
-            return candidates[0] if candidates else None
-
-        # Normalize lengths by padding shorter candidates
-        max_len = max(len(c) for c in candidates)
-        padded = [c.ljust(max_len) for c in candidates]
-
-        result_chars = []
-        for pos in range(max_len):
-            char_votes = Counter(c[pos] for c in padded if pos < len(c))
-            if char_votes:
-                # Pick the most common character
-                best_char = char_votes.most_common(1)[0][0]
-                result_chars.append(best_char)
-
-        result = ''.join(result_chars).rstrip()
-        
-        # Only use if result is reasonable quality
-        if len(result) < 3:
-            return None
-            
-        return result
 
     def _merge_ocr_results(self, *texts: str) -> str:
         """Legacy merge — delegates to consensus merge."""
@@ -668,6 +617,105 @@ class OCREngine:
         else:
             return "poor", issues
 
+    # ===== CROSS-VALIDATION =====
+
+    def _cross_validate_json(self, json_data: dict, ocr_text: str) -> dict:
+        """
+        Cross-validate JSON extraction against OCR text.
+        Fixes: null dates when OCR text has them, fabricated reference numbers,
+        and date format issues.
+        """
+        if not isinstance(json_data, dict):
+            return json_data
+
+        # 1. Fill null dates from OCR text
+        date_pattern = re.compile(
+            r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})|'
+            r'(\d{1,2}[/-][A-Z]{3}[/-]\d{2,4})|'
+            r'(\d{1,2}\s+[A-Z]{3}\s+\d{4})',
+            re.IGNORECASE,
+        )
+        ocr_dates = date_pattern.findall(ocr_text)
+        ocr_dates_flat = [d for group in ocr_dates for d in group if d]
+
+        for key in list(json_data.keys()):
+            key_lower = key.lower()
+            # Fill null date fields with dates found in OCR
+            if ('date' in key_lower or 'تاريخ' in key) and json_data[key] is None:
+                if ocr_dates_flat:
+                    # Try to find a date near the field label in OCR text
+                    found = self._find_date_near_label(key, ocr_text)
+                    if found:
+                        json_data[key] = found
+                        logger.info(f"Cross-validation: filled null '{key}' with '{found}' from OCR text")
+
+        # 2. Detect fabricated reference numbers (strings of X's or clearly fake patterns)
+        for key in list(json_data.keys()):
+            val = json_data[key]
+            if not isinstance(val, str):
+                continue
+            # Flag reference numbers full of X's or not found anywhere in OCR
+            if re.search(r'X{4,}', val):
+                if val not in ocr_text:
+                    logger.warning(f"Cross-validation: removing fabricated '{key}': '{val}'")
+                    json_data[key] = None
+
+        # 3. Validate dates against OCR text — catch day/month swaps
+        for key in list(json_data.keys()):
+            val = json_data[key]
+            if not isinstance(val, str):
+                continue
+            key_lower = key.lower()
+            if 'date' not in key_lower and 'تاريخ' not in key:
+                continue
+
+            # If JSON has a date that's not in OCR text, try to find the correct one
+            if val and val not in ocr_text:
+                # Check for day/month swap: JSON says 06/01/2004 but OCR has 06/10/2004
+                swapped = self._try_swap_date(val)
+                if swapped and swapped in ocr_text:
+                    logger.warning(
+                        f"Cross-validation: fixed date swap '{key}': '{val}' -> '{swapped}'"
+                    )
+                    json_data[key] = swapped
+
+        return json_data
+
+    def _find_date_near_label(self, label: str, ocr_text: str) -> Optional[str]:
+        """Find a date value near a field label in OCR text."""
+        label_variants = [label.lower().replace('_', ' ')]
+        # Common label mappings
+        if 'invoice' in label.lower():
+            label_variants.extend(['invoice date', 'inv date', 'تاريخ الفاتورة'])
+        elif 'issue' in label.lower():
+            label_variants.extend(['date', 'تاريخ'])
+
+        date_pat = re.compile(
+            r'(\d{1,2}[/-]\w{2,3}[/-]\d{2,4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{1,2}\s+[A-Z]{3}\s+\d{4})',
+            re.IGNORECASE,
+        )
+
+        for variant in label_variants:
+            idx = ocr_text.lower().find(variant)
+            if idx >= 0:
+                # Look within 80 chars after the label
+                window = ocr_text[idx:idx + 80]
+                match = date_pat.search(window)
+                if match:
+                    return match.group(1)
+
+        return None
+
+    def _try_swap_date(self, date_str: str) -> Optional[str]:
+        """Try swapping day/month in a date string."""
+        m = re.match(r'^(\d{1,2})([/-])(\d{1,2})([/-])(\d{2,4})$', date_str)
+        if m:
+            a, sep1, b, sep2, year = m.groups()
+            swapped = f"{b}{sep1}{a}{sep2}{year}"
+            if swapped != date_str:
+                return swapped
+        return None
+
     # ===== MAIN =====
 
     def process_first_page(self, file_path: Union[str, Path]) -> dict:
@@ -739,6 +787,12 @@ class OCREngine:
             logger.info(f"✅ OCR: {result['ocr_time']}s")
 
         elapsed = time.time() - start
+
+        # Cross-validate JSON against OCR text
+        if result["json_data"] and result["clean_ocr_text"]:
+            result["json_data"] = self._cross_validate_json(
+                result["json_data"], result["clean_ocr_text"]
+            )
 
         text_to_validate = result["clean_ocr_text"] or str(result.get("json_data", ""))
         validation = validate_ocr_output(text_to_validate, file_path.name)

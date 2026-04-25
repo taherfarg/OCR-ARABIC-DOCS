@@ -445,11 +445,11 @@ def full_preprocess_pipeline(
     if binarize:
         gray = selective_binarize(gray)
 
-    # 12. Morphological cleanup
-    gray = morphological_clean(gray)
-
-    # 13. Remove isolated noise pixels
-    gray = remove_noise_isolated(gray)
+    # 12-13: Morphological cleanup and noise removal only when binarization was applied,
+    # otherwise they destroy thin Arabic text strokes
+    if binarize or enhance_handwriting:
+        gray = morphological_clean(gray)
+        gray = remove_noise_isolated(gray)
 
     # 14. Resize to optimal size
     if gray.width > max_width:
@@ -472,42 +472,44 @@ def full_preprocess_pipeline(
 def light_preprocess_vlm(
     image_input: Union[str, Path, Image.Image],
     max_width: int = 1600,
+    min_width: int = 1000,
 ) -> Image.Image:
     """
     Light preprocessing for modern VLMs (Qwen2.5-VL, etc.).
 
-    Modern VLMs are trained on natural color images and work best when
-    the image looks natural. Heavy CV preprocessing (grayscale, binarization,
-    morphological ops) DESTROYS the image for these models.
-
-    This function only does:
-    1. Load image
-    2. Convert to RGB
-    3. Resize to fit max_width while preserving aspect ratio
-    4. Optional: slight sharpening for scanned documents
-
-    Returns: RGB PIL Image
+    Modern VLMs work best with natural color images. This only does:
+    1. Convert to RGB
+    2. Upscale small images (critical for OCR accuracy)
+    3. Downscale oversized images
+    4. Light sharpening
     """
-    # Load
     if isinstance(image_input, (str, Path)):
         image = Image.open(str(image_input))
     else:
         image = image_input
 
     original_size = image.size
-    logger.info(f"🖼️ Original: {original_size}")
 
     # 1. Ensure RGB
     image = image.convert("RGB")
 
-    # 2. Resize if too large
+    # 2. Upscale small images — VLMs need enough pixels to read text
+    if image.width < min_width:
+        scale = min_width / image.width
+        image = image.resize(
+            (int(image.width * scale), int(image.height * scale)),
+            Image.LANCZOS,
+        )
+        logger.info(f"Upscaled: {original_size} -> {image.size}")
+
+    # 3. Downscale if too large
     if image.width > max_width:
         ratio = max_width / float(image.width)
         new_h = int(image.height * ratio)
         image = image.resize((max_width, new_h), Image.LANCZOS)
 
-    # 3. Light sharpening for scanned documents
+    # 4. Light sharpening for scanned documents
     image = sharpen_image(image, factor=1.2)
 
-    logger.info(f"✅ Light preprocessed: {image.size} (VLM mode)")
+    logger.info(f"Light preprocessed: {image.size} (VLM mode)")
     return image

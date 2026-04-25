@@ -1,13 +1,8 @@
 """
-Enhanced post-processing pipeline for maximum OCR accuracy.
+Post-processing pipeline for OCR accuracy.
 
-Improvements over v1:
-- Better hallucination detection (more languages, more patterns)
-- Smarter repetition removal (preserves legitimate repeated content)
-- Context-aware cleaning
-- Improved quality validation with detailed scoring
-- Arabic-specific text normalization
-- Number and date format normalization
+Cleans OCR output by removing hallucinations, repetitions, and artifacts
+while preserving legitimate document content.
 """
 import re
 from collections import Counter
@@ -40,30 +35,17 @@ def remove_repetitions(text: str, max_repeats: int = 2) -> str:
 
     removed = len(lines) - len(cleaned)
     if removed > 0:
-        logger.warning(f"🔄 Removed {removed} repeated lines")
+        logger.warning(f"Removed {removed} repeated lines")
     return '\n'.join(cleaned)
 
 
-def remove_prefix_loops(text: str, prefix_len: int = 10, max_consecutive: int = 5) -> str:
+def remove_prefix_loops(text: str, prefix_len: int = 15, max_consecutive: int = 8) -> str:
     """
     Detect and remove hallucination loops where the model generates many
-    consecutive lines that share the same prefix (e.g., "الى جانب الشر...").
+    consecutive lines that share the same long prefix.
 
-    This catches patterns like:
-        الى جانب التحرير
-        الى جانب التوفيق
-        الى جانب التبرع
-        الى جانب الامتياز
-        ... (hundreds more)
-
-    Also catches numbered list hallucinations:
-        No. 31
-        No. 32
-        No. 33
-        ... (dozens more)
-
-    These are model hallucinations — real documents don't have 5+ consecutive
-    lines all starting with the same phrase or pattern.
+    Uses prefix_len=15 and max_consecutive=8 to avoid false positives
+    on legal article sequences (which share short prefixes like "المادة").
     """
     lines = text.split('\n')
     if len(lines) < max_consecutive:
@@ -74,37 +56,32 @@ def remove_prefix_loops(text: str, prefix_len: int = 10, max_consecutive: int = 
     total_removed = 0
 
     while i < len(lines):
-        # Check if we're entering a prefix loop
         if i + max_consecutive <= len(lines):
             current_stripped = lines[i].strip()
 
-            # === Check 1: Numbered list pattern (e.g., "No. 31", "No. 32") ===
-            numbered_match = re.match(r'^(No\.?\s*\d+)', current_stripped, re.IGNORECASE)
-            if numbered_match:
-                # Count consecutive numbered lines matching "No. XX" pattern
+            # Numbered list hallucination (e.g., "No. 31", "No. 32", ...)
+            if re.match(r'^No\.?\s*\d+\s*$', current_stripped, re.IGNORECASE):
                 loop_count = 0
                 j = i
                 while j < len(lines):
-                    if re.match(r'^No\.?\s*\d+', lines[j].strip(), re.IGNORECASE):
+                    if re.match(r'^No\.?\s*\d+\s*$', lines[j].strip(), re.IGNORECASE):
                         loop_count += 1
                         j += 1
-                        continue
-                    break
+                    else:
+                        break
 
                 if loop_count >= max_consecutive:
                     logger.warning(
-                        f"🔄 Removed numbered list loop: 'No. XX' "
-                        f"×{loop_count} consecutive lines"
+                        f"Removed numbered list loop: 'No. XX' x{loop_count}"
                     )
                     total_removed += loop_count
                     i = j
                     continue
 
-            # === Check 2: Prefix-based loop (e.g., "الى جانب الشر...") ===
+            # Prefix-based loop detection (long prefix only)
             if len(current_stripped) >= prefix_len:
                 current_prefix = _normalize_prefix(current_stripped[:prefix_len])
 
-                # Count how many consecutive lines share this prefix
                 loop_count = 0
                 j = i
                 while j < len(lines):
@@ -115,24 +92,12 @@ def remove_prefix_loops(text: str, prefix_len: int = 10, max_consecutive: int = 
                             loop_count += 1
                             j += 1
                             continue
-                    # Prefix changed — check if it's a sub-prefix loop
-                    # (e.g., "الى جانب الشر" → "الى جانب السع")
-                    if len(line_stripped) >= prefix_len:
-                        line_prefix = _normalize_prefix(line_stripped[:prefix_len])
-                        # Check if still sharing a shorter prefix (6 chars)
-                        short_current = _normalize_prefix(current_stripped[:6])
-                        short_line = _normalize_prefix(line_stripped[:6])
-                        if short_current == short_line and short_current:
-                            loop_count += 1
-                            j += 1
-                            continue
                     break
 
                 if loop_count >= max_consecutive:
-                    # This is a hallucination loop — skip all of it
                     logger.warning(
-                        f"🔄 Removed prefix loop: '{current_stripped[:30]}...' "
-                        f"×{loop_count} consecutive lines"
+                        f"Removed prefix loop: '{current_stripped[:30]}...' "
+                        f"x{loop_count} consecutive lines"
                     )
                     total_removed += loop_count
                     i = j
@@ -142,7 +107,7 @@ def remove_prefix_loops(text: str, prefix_len: int = 10, max_consecutive: int = 
         i += 1
 
     if total_removed > 0:
-        logger.info(f"🔄 Total hallucination-loop lines removed: {total_removed}")
+        logger.info(f"Total hallucination-loop lines removed: {total_removed}")
 
     return '\n'.join(cleaned)
 
@@ -151,7 +116,7 @@ def _normalize_prefix(s: str) -> str:
     """Normalize a string prefix for comparison."""
     s = s.strip().lower()
     # Remove Arabic diacritics
-    s = re.sub(r'[\u0617-\u061A\u064B-\u0652]', '', s)
+    s = re.sub(r'[ؗ-ًؚ-ْ]', '', s)
     # Normalize Arabic variants
     s = s.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
     s = s.replace('ة', 'ه').replace('ى', 'ي')
@@ -160,10 +125,12 @@ def _normalize_prefix(s: str) -> str:
     return s
 
 
-def remove_near_duplicates(text: str, max_repeats: int = 2) -> str:
+def remove_near_duplicates(text: str, max_repeats: int = 3) -> str:
     """
     Remove near-duplicate lines (same content after normalization).
-    Uses Arabic-aware normalization for comparison.
+    Uses max_repeats=3 to avoid removing legitimate legal article patterns.
+    Only normalizes diacritics and whitespace, keeps punctuation to reduce
+    false matches.
     """
     lines = text.split('\n')
     cleaned = []
@@ -175,16 +142,13 @@ def remove_near_duplicates(text: str, max_repeats: int = 2) -> str:
             cleaned.append(line)
             continue
 
+        # Only normalize diacritics and whitespace for comparison,
+        # keep punctuation and numbers to distinguish similar lines
         norm = s.lower()
-        # Remove Arabic diacritics for comparison
-        norm = re.sub(r'[\u0617-\u061A\u064B-\u0652]', '', norm)
-        # Normalize Arabic variants
+        norm = re.sub(r'[ؗ-ًؚ-ْ]', '', norm)
         norm = norm.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
         norm = norm.replace('ة', 'ه').replace('ى', 'ي')
-        # Remove extra whitespace
         norm = re.sub(r'\s+', ' ', norm).strip()
-        # Remove punctuation for comparison
-        norm = re.sub(r'[.,;:\-–—/()؟!،]', '', norm)
 
         c = seen.get(norm, 0)
         seen[norm] = c + 1
@@ -193,34 +157,30 @@ def remove_near_duplicates(text: str, max_repeats: int = 2) -> str:
 
     removed = len(lines) - len(cleaned)
     if removed > 0:
-        logger.warning(f"🔄 Removed {removed} near-duplicates")
+        logger.warning(f"Removed {removed} near-duplicates")
     return '\n'.join(cleaned)
 
 
 def remove_hallucinated_languages(text: str) -> str:
-    """
-    Remove non-Arabic/English text that the model hallucinated.
-    Expanded to cover more scripts and patterns.
-    """
-    # Script patterns to remove (not expected in Arabic/English docs)
+    """Remove non-Arabic/English text that the model hallucinated."""
     script_patterns = [
-        ("CJK", r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]+'),
-        ("Hindi", r'[\u0900-\u097f]+'),
-        ("Cyrillic", r'[\u0400-\u04ff]+'),
-        ("Thai", r'[\u0e00-\u0e7f]+'),
-        ("Korean", r'[\uac00-\ud7af]+'),
-        ("Georgian", r'[\u10a0-\u10ff]+'),
-        ("Armenian", r'[\u0530-\u058f]+'),
-        ("Bengali", r'[\u0980-\u09ff]+'),
-        ("Tamil", r'[\u0b80-\u0bff]+'),
-        ("Gujarati", r'[\u0a80-\u0aff]+'),
+        ("CJK", r'[一-鿿぀-ゟ゠-ヿ]+'),
+        ("Hindi", r'[ऀ-ॿ]+'),
+        ("Cyrillic", r'[Ѐ-ӿ]+'),
+        ("Thai", r'[฀-๿]+'),
+        ("Korean", r'[가-힯]+'),
+        ("Georgian", r'[Ⴀ-ჿ]+'),
+        ("Armenian", r'[԰-֏]+'),
+        ("Bengali", r'[ঀ-৿]+'),
+        ("Tamil", r'[஀-௿]+'),
+        ("Gujarati", r'[઀-૿]+'),
     ]
 
     for name, pattern in script_patterns:
         regex = re.compile(pattern)
         matches = regex.findall(text)
         if matches:
-            logger.warning(f"🚨 Removed {name}: {matches[:3]}")
+            logger.warning(f"Removed {name} script: {len(matches)} occurrences")
             text = regex.sub('', text)
 
     return text
@@ -229,30 +189,27 @@ def remove_hallucinated_languages(text: str) -> str:
 def remove_code_garbage(text: str) -> str:
     """
     Remove code-like artifacts that VLMs sometimes generate.
-    Expanded patterns for better coverage.
+    Uses conservative patterns to avoid removing legitimate document content.
+    Words like "import", "export", "class" appear in legal/financial docs.
     """
-    # JavaScript-like code
-    text = re.sub(r'(?:function|const|var|let|async|await|return|import|export|class)\s*[\(\{].*?[\)\}];?', '', text, flags=re.DOTALL)
-    
+    # Only match full code statements (require semicolons or braces)
+    text = re.sub(r'(?:function|const|var|let)\s+\w+\s*\(.*?\)\s*\{.*?\}', '', text)
+
     # HTML tags
-    text = re.sub(r'<[^>]+>', '', text)
-    
+    text = re.sub(r'<(?:script|style|div|span|html|body|head|meta|link)[^>]*>.*?</(?:script|style|div|span|html|body|head|meta|link)>', '', text, flags=re.DOTALL)
+
     # Console/browser objects
-    text = re.sub(r'(?:console|window|document|process)\.[a-zA-Z]+\(.*?\)', '', text)
-    
-    # JSON-like artifacts (but not if it looks like actual data)
-    text = re.sub(r'(?:undefined|null|NaN|Infinity)\b', '', text)
-    
-    # Python-like code
-    text = re.sub(r'(?:def|class|import|from|print)\s+[\w\.]+\s*[\(\:].*?[\)\:]', '', text, flags=re.DOTALL)
-    
-    # Markdown artifacts
-    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)  # Links → text
-    
+    text = re.sub(r'(?:console|window|document)\.\w+\(.*?\)', '', text)
+
+    # JSON-like artifacts
+    text = re.sub(r'\b(?:undefined|NaN|Infinity)\b', '', text)
+
+    # Markdown link syntax (preserve link text)
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+
     # URL artifacts
     text = re.sub(r'https?://\S+', '', text)
-    
+
     return text
 
 
@@ -260,112 +217,83 @@ def remove_model_hallucinations(text: str) -> str:
     """
     Remove common VLM hallucination patterns where the model
     explains itself instead of just extracting text.
+    Patterns require start-of-line to avoid false matches in document text.
     """
     hallucination_patterns = [
-        # English hallucinations
-        r'I\s+(?:cannot|can\'t|am unable to)\s+(?:read|see|extract|identify|determine).*?(?:\n|$)',
-        r'(?:The|This)\s+(?:image|document|text)\s+(?:appears to|seems to|looks like).*?(?:\n|$)',
-        r'(?:Please|Kindly)\s+(?:note|be advised).*?(?:\n|$)',
-        r'(?:Note|Disclaimer|Warning|Caution)\s*:\s*(?:This|The).*?(?:\n|$)',
-        r'I\s+(?:would|will)\s+(?:be happy|glad|pleased).*?(?:\n|$)',
-        r'(?:Let me|Allow me|Let\'s)\s+(?:know|help|explain).*?(?:\n|$)',
-        r'(?:Here|Below|Following)\s+(?:is|are)\s+(?:the|my).*?(?:extracted|OCR|result).*?(?:\n|$)',
-        r'(?:Based on|From|According to)\s+(?:what|the)\s+I\s+(?:can|am).*?(?:\n|$)',
-        
-        # Arabic hallucinations
-        r'لا\s*(?:أستطيع|يمكنني|أقدر)\s*(?:قراءة|رؤية|استخراج).*?(?:\n|$)',
-        r'(?:هذه|هذا)\s*(?:الصورة|المستند|النص)\s*(?:يبدو|تبدو|يظهر).*?(?:\n|$)',
-        r'(?:يرجى|رجاء)\s*(?:ملاحظة|الانتباه).*?(?:\n|$)',
-        r'(?:ملاحظة|تنبيه|تحذير)\s*:\s*(?:هذا|هذه).*?(?:\n|$)',
-        r'سأقوم\s*(?:بـ|باستخراج).*?(?:\n|$)',
+        # English hallucinations (start-of-line only)
+        r'^I\s+(?:cannot|can\'t|am unable to)\s+(?:read|see|extract|identify|determine).*$',
+        r'^(?:Please|Kindly)\s+(?:note|be advised).*$',
+        r'^(?:Note|Disclaimer|Warning|Caution)\s*:\s*(?:This|The)\s+(?:image|document|text).*$',
+        r'^I\s+(?:would|will)\s+(?:be happy|glad|pleased).*$',
+        r'^(?:Let me|Allow me|Let\'s)\s+(?:know|help|explain).*$',
+        r'^(?:Here|Below|Following)\s+(?:is|are)\s+(?:the|my)\s+(?:extracted|OCR|transcri).*$',
+        r'^(?:Based on|From|According to)\s+(?:what|the)\s+I\s+(?:can|am).*$',
+        r'^As an AI.*$',
+        # Arabic hallucinations (start-of-line only)
+        r'^لا\s*(?:أستطيع|يمكنني|أقدر)\s*(?:قراءة|رؤية|استخراج).*$',
+        r'^سأقوم\s*(?:بـ|باستخراج).*$',
     ]
-    
+
     for pattern in hallucination_patterns:
-        text = re.sub(pattern, '', text, flags=re.IGNORECASE)
-    
+        text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.MULTILINE)
+
     return text
 
 
 def normalize_arabic_text(text: str) -> str:
     """
     Normalize Arabic text for consistency without changing meaning.
-    - Normalize alef variants
-    - Normalize taa marbuta
-    - Remove tatweel (kashida)
-    - Normalize whitespace
+    Only removes kashida and fixes doubled punctuation.
+    Does NOT replace commas globally (that corrupts English text and numbers).
     """
-    # Remove tatweel (kashida) — elongation character
-    text = text.replace('\u0640', '')
-    
-    # Normalize alef variants to bare alef (for consistency)
-    # Only in specific contexts where it doesn't change meaning
-    # We DON'T normalize أ/إ/آ → ا because they carry meaning
-    
-    # Fix common Arabic punctuation issues
+    # Remove tatweel (kashida)
+    text = text.replace('ـ', '')
+
+    # Fix doubled Arabic punctuation
     text = text.replace('،،', '،')
-    text = text.replace('..', '…')
     text = text.replace('؟؟', '؟')
-    
-    # Normalize Arabic comma
-    text = text.replace(',', '،')
-    # But keep commas in numbers: 1,000.00
-    text = re.sub(r'(\d)،(\d{3})', r'\1,\2', text)
-    
+
+    # Replace commas with Arabic commas ONLY between Arabic characters
+    text = re.sub(r'([؀-ۿ]),(\s*[؀-ۿ])', r'\1،\2', text)
+
     return text
 
 
 def fix_number_formats(text: str) -> str:
     """
-    Normalize number formats for consistency.
-    - Fix broken decimal numbers
-    - Normalize amount formats
-    - Fix date formats
+    Fix broken number formats from OCR errors.
+    Conservative: only fix clearly broken patterns.
     """
-    # Fix spaces in numbers: "1 000" → "1,000"
-    text = re.sub(r'(\d)\s+(\d{3})', r'\1,\2', text)
-    
-    # Fix broken decimals: "1. 00" → "1.00"
-    text = re.sub(r'(\d)\.\s+(\d{2})', r'\1.\2', text)
-    
-    # Fix comma-decimal confusion in amounts: "1,00" at end of line → "1.00"
-    # Only when it looks like a decimal (2 digits after comma)
-    text = re.sub(r'(\d+),(\d{2})\s*$', r'\1.\2', text, flags=re.MULTILINE)
-    
-    # Normalize date separators
+    # Fix broken decimals: "1. 00" -> "1.00"
+    text = re.sub(r'(\d)\.\s+(\d{2})\b', r'\1.\2', text)
+
+    # Normalize date separators with spaces
     text = re.sub(r'(\d{1,4})\s*[-–—]\s*(\d{1,2})\s*[-–—]\s*(\d{1,4})', r'\1-\2-\3', text)
-    
+
     return text
 
 
 def clean_ocr_text(text: str) -> str:
     """
-    Full enhanced cleaning pipeline:
-    1. Remove hallucinated languages
-    2. Remove model hallucinations (explanations, disclaimers)
-    3. Remove code garbage
-    4. Remove repetitions
-    5. Apply dictionary corrections
-    6. Normalize Arabic text
-    7. Fix number formats
-    8. Clean formatting
+    Full cleaning pipeline. Order matters.
     """
     original_len = len(text)
 
-    # 1. Remove hallucinations (non-Arabic/English scripts)
+    # 1. Remove hallucinated scripts (CJK, Hindi, etc.)
     text = remove_hallucinated_languages(text)
 
-    # 2. Remove model hallucinations (explanations, disclaimers)
+    # 2. Remove model hallucinations (AI explanations)
     text = remove_model_hallucinations(text)
 
-    # 3. Remove code
+    # 3. Remove code artifacts
     text = remove_code_garbage(text)
 
     # 4. Remove repetitions
     text = remove_repetitions(text, max_repeats=2)
-    text = remove_near_duplicates(text, max_repeats=2)
-    text = remove_prefix_loops(text, prefix_len=10, max_consecutive=5)
+    text = remove_near_duplicates(text, max_repeats=3)
+    text = remove_prefix_loops(text, prefix_len=15, max_consecutive=8)
 
-    # 5. Apply dictionary corrections (major accuracy boost!)
+    # 5. Apply dictionary corrections
     text = apply_all_corrections(text)
 
     # 6. Normalize Arabic text
@@ -374,12 +302,11 @@ def clean_ocr_text(text: str) -> str:
     # 7. Fix number formats
     text = fix_number_formats(text)
 
-    # 8. Clean formatting
+    # 8. Clean formatting (conservative)
     text = re.sub(r'\*{5,}', '', text)
     text = re.sub(r'\.{5,}', '...', text)
-    text = re.sub(r'\-{5,}', '—', text)
+    text = re.sub(r'-{5,}', '—', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
-    text = re.sub(r' {3,}', ' ', text)
     text = re.sub(r'\t{2,}', '\t', text)
 
     # Remove empty lines but preserve paragraph breaks
@@ -389,23 +316,20 @@ def clean_ocr_text(text: str) -> str:
     cleaned_len = len(text)
     if original_len != cleaned_len:
         pct = round((1 - cleaned_len / max(original_len, 1)) * 100, 1)
-        logger.info(f"🧹 {original_len} → {cleaned_len} ({pct}% cleaned)")
+        logger.info(f"Cleaned: {original_len} -> {cleaned_len} ({pct}% removed)")
 
     return text.strip()
 
 
 def validate_ocr_output(text: str, file_name: str = "") -> dict:
-    """
-    Validate OCR output quality with detailed scoring.
-    Returns quality level, issues, and statistics.
-    """
+    """Validate OCR output quality with detailed scoring."""
     issues = []
 
-    if len(text) < 50:
+    if len(text) < 30:
         issues.append("Very short output")
 
     lines = [l.strip() for l in text.split('\n') if l.strip()]
-    
+
     # Check for repetition
     if lines:
         counts = Counter(lines)
@@ -413,16 +337,10 @@ def validate_ocr_output(text: str, file_name: str = "") -> dict:
         if top_count > 3:
             issues.append(f"Repetition: '{top[:40]}' x{top_count}")
 
-    # Check for code remnants
-    code_words = ["function", "console", "const ", "<script", "var ", "import "]
-    if any(w in text.lower() for w in code_words):
-        issues.append("Code remnants")
-
     # Check for hallucination markers
     hallucination_markers = [
-        "I cannot", "I am unable", "I can't", "لا أستطيع",
+        "I cannot", "I am unable", "I can't",
         "As an AI", "I don't have", "I'm not able",
-        "appears to be", "seems to be", "looks like",
     ]
     text_lower = text.lower()
     for marker in hallucination_markers:
@@ -431,14 +349,14 @@ def validate_ocr_output(text: str, file_name: str = "") -> dict:
             break
 
     # Character analysis
-    arabic = len(re.findall(r'[\u0600-\u06ff]', text))
+    arabic = len(re.findall(r'[؀-ۿ]', text))
     english = len(re.findall(r'[a-zA-Z]', text))
     digits = len(re.findall(r'\d', text))
     total_alpha = arabic + english
 
     # Quality scoring
     quality_score = 0
-    
+
     # Length score (0-25)
     if len(text) > 500:
         quality_score += 25
@@ -448,7 +366,7 @@ def validate_ocr_output(text: str, file_name: str = "") -> dict:
         quality_score += 15
     elif len(text) > 50:
         quality_score += 10
-    
+
     # Line count score (0-15)
     if len(lines) > 10:
         quality_score += 15
@@ -456,7 +374,7 @@ def validate_ocr_output(text: str, file_name: str = "") -> dict:
         quality_score += 10
     elif len(lines) > 3:
         quality_score += 5
-    
+
     # Content diversity score (0-20)
     if total_alpha > 0:
         unique_words = len(set(text.split()))
@@ -464,23 +382,22 @@ def validate_ocr_output(text: str, file_name: str = "") -> dict:
         if total_words > 0:
             diversity = unique_words / total_words
             quality_score += int(diversity * 20)
-    
-    # Number presence score (0-10) — documents usually have numbers
+
+    # Number presence score (0-10)
     if digits > 0:
         quality_score += min(digits, 10)
-    
+
     # Language detection score (0-15)
     if arabic > 0 and english > 0:
-        quality_score += 15  # Mixed document — good sign
+        quality_score += 15
     elif arabic > 0:
-        quality_score += 10  # Arabic document
+        quality_score += 10
     elif english > 0:
-        quality_score += 10  # English document
-    
-    # Penalty for issues (0-15)
+        quality_score += 10
+
+    # Penalty for issues
     quality_score -= len(issues) * 5
-    
-    # Determine quality level
+
     if quality_score >= 60 and not issues:
         quality = "excellent"
     elif quality_score >= 40 and len(issues) <= 1:

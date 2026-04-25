@@ -27,16 +27,25 @@ CLASSIFIER_MODEL_ID = "bakrianoo/arabic-legal-documents-ocr-1.0"
 # Detailed classification prompt — tells the model exactly what to extract
 CLASSIFIER_PROMPT = """Analyze this document image carefully and extract the following information in JSON format:
 1. "document_type": Identify the type (payment_voucher, invoice, purchase_order, contract, letter, receipt, legal_document, bank_statement, memorandum, report, other)
-2. "document_type_ar": Same type name in Arabic
-3. "title": The document title or heading
+2. "document_type_ar": The Arabic name for this document type as commonly used in UAE/Saudi government
+3. "title": The document title or heading EXACTLY as written on the document. Do NOT invent or translate a title.
 4. "language": Primary language(s) detected (arabic, english, mixed)
 5. "is_handwritten": Whether the document contains handwritten text (true/false)
-6. "key_fields": List of important field names found in the document
-7. "entities": Any named entities (people, organizations, departments)
-8. "amounts": Any monetary amounts mentioned
-9. "dates": Any dates mentioned
-10. "reference_numbers": Any reference, invoice, or document numbers
-11. "summary": Brief one-line summary of the document content
+6. "key_fields": List of important field LABELS found in the document (e.g., "PV No", "Supplier Name")
+7. "entities": Any named entities (people, organizations, departments) ACTUALLY written on the document
+8. "amounts": Any monetary amounts mentioned with their currency
+9. "dates": ALL dates on the document, copied EXACTLY as written (do NOT reformat or swap day/month)
+10. "reference_numbers": Any reference, invoice, PV, BC, or document numbers
+11. "bank_details": Bank name, account number, SWIFT/BIC code if present
+12. "stamps_and_marks": Any stamps (PAID, POSTED, APPROVED, etc.) with their dates if visible
+13. "invoice_details": Invoice number and date if present
+14. "summary": Brief one-line summary of the document content
+
+CRITICAL RULES:
+- Copy dates EXACTLY as they appear on the document. Do NOT swap day and month.
+- Do NOT invent, fabricate, or guess any field value. If a field is not visible, set it to null.
+- Only extract text that is ACTUALLY visible in the image.
+- For reference numbers, copy the exact characters — do not approximate or pad with X's.
 
 IMPORTANT: Respond ONLY with valid JSON. Do not include any text before or after the JSON."""
 
@@ -76,7 +85,7 @@ GEMMA_REPETITION_PENALTY = 1.2
 GEMMA_TOP_P = 0.85
 GEMMA_TOP_K = 40
 
-QWEN_MAX_TOKENS = 1024            # Single page rarely needs more than 800 tokens
+QWEN_MAX_TOKENS = 2048            # Dense Arabic legal pages can exceed 1024 tokens
 QWEN_MIN_TOKENS = 0                # Don't force generation past content end
 QWEN_TEMPERATURE = 1.0             # Unused with do_sample=False (greedy)
 QWEN_TOP_P = 1.0                   # Unused with do_sample=False (greedy)
@@ -86,19 +95,19 @@ QWEN_DO_SAMPLE = False             # Greedy decoding for deterministic OCR
 
 # GENERATION SAFETY — prevent hangs and infinite loops
 GENERATION_TIMEOUT_SEC = 300       # Max seconds per generation call (5 min)
-NO_REPEAT_NGRAM_SIZE = 6           # Prevent repetition loops in generation
-QWEN_MAX_PIXELS = 2007040          # 1600*28*28 — more visual tokens for small text
+NO_REPEAT_NGRAM_SIZE = 8           # 6 was too aggressive — blocks legitimate legal phrases
+QWEN_MAX_PIXELS = 3211264          # 2048*28*28 — more visual tokens for small text
 
-# MULTI-PASS SETTINGS — 2 passes (Arabic + English) + optional structured
+# MULTI-PASS SETTINGS — 3 passes (Arabic + English + Structured) for best accuracy
 MULTIPASS_ENABLED = True
-MULTIPASS_COUNT = 2
+MULTIPASS_COUNT = 3
 MULTIPASS_MERGE_STRATEGY = "best_line"  # "best_line" or "longest"
 
 # QUALITY GATE — retry if quality is poor
 QUALITY_RETRY_ENABLED = True
 QUALITY_RETRY_MAX_ATTEMPTS = 2  # Max retry attempts per document
-QUALITY_MIN_CHARS = 50  # Minimum characters for acceptable output
-QUALITY_MIN_LINES = 3   # Minimum non-empty lines
+QUALITY_MIN_CHARS = 30  # Minimum characters for acceptable output
+QUALITY_MIN_LINES = 2   # Minimum non-empty lines
 
 # CLASSIFICATION
 DOCUMENT_TYPES = {
